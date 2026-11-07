@@ -40,6 +40,8 @@ step "exception norm"   $PY -u -m src.excnorm   --phase "$PHASE"
 step "multi-ref receipts" $PY -u -m src.multiref  --phase "$PHASE"
 step "unique amount (T14)" $PY -u -m src.refnoise --phase "$PHASE"
 step "credit-note netting" $PY -u -m src.cnlink --phase "$PHASE"
+step "repeated instalments (T17)" $PY -u -m src.instrep --phase "$PHASE"
+step "discount subsets (T18)" $PY -u -m src.discombo --phase "$PHASE"
 step "unidentified"     $PY -u -m src.unident     --phase "$PHASE"
 [[ -n "${NO_CNFX:-}" ]] || step "credit notes / FX sets" $PY -u -m src.cnfx --phase "$PHASE"
 if [[ "$PHASE" == "window" || "$PHASE" == "sample" ]]; then
