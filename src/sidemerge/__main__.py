@@ -20,7 +20,7 @@ def build(phase: str) -> None:
     if not os.path.exists(ap):
         print(f"[{phase}] no side_links_ap.parquet: side_links unchanged"); return
     con = duckdb.connect()
-    con.execute(f"CREATE TABLE S AS SELECT * FROM '{sl}' WHERE rule NOT LIKE 'T6.%' AND rule NOT LIKE 'T3f.%' AND rule NOT LIKE 'T2b.%'")
+    con.execute(f"CREATE TABLE S AS SELECT * FROM '{sl}' WHERE rule LIKE 'T2.%'")   # only T2 rows survive: later modules (T6, T3f, T13, T14…) re-add theirs
     con.execute(f"CREATE TABLE A AS SELECT * FROM '{ap}'")
     con.execute(f"""COPY (SELECT * FROM S WHERE bank_txn_id NOT IN (SELECT bank_txn_id FROM A)
                           UNION ALL BY NAME SELECT * FROM A) TO '{sl}' (FORMAT parquet)""")
