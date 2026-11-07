@@ -9,7 +9,9 @@ Evidence families (each row keeps rule, confidence, evidence):
   fuzzy     rapidfuzz on unique extracted names, only for lines with nothing better (see fuzzy.py)
 Confidences of different families are combined as 1 - prod(1 - c); top 3 per line are kept.
 """
-from .common import KEY_LENGTHS, SHORT_MIN, connect, out_dir
+import os
+
+from .common import KEY_LENGTHS, RAW, SHORT_MIN, connect, out_dir
 
 MAX_TOKENS = 20
 MASTER_BASE = {24: 0.90, 16: 0.85, 10: 0.70}
@@ -93,7 +95,10 @@ def candidates(con, phase, model):
                UNION ALL SELECT supplier_id, supplier_invoice_number, issue_date FROM {_src(base_,'ap_invoices')}
                UNION ALL SELECT party_id, document_number, issue_date FROM {_src(base_,'credit_notes')}"""
     if base_ != "train":
-        docs += f" UNION ALL SELECT party_id, document_number, issue_date FROM {_src(base_,'open_items_at_start')}"
+        open_items = f"data_cache/{base_}/open_items_at_start.parquet"
+        raw_open_items = os.path.join(RAW, base_, "open_items_at_start.csv.gz")
+        if os.path.exists(open_items) or os.path.exists(raw_open_items):
+            docs += f" UNION ALL SELECT party_id, document_number, issue_date FROM {_src(base_,'open_items_at_start')}"
     con.execute(f"""CREATE OR REPLACE TEMP TABLE docidx AS
         WITH d AS (SELECT DISTINCT party_id, regexp_replace(upper(d), '[^A-Z0-9]', '', 'g') AS k_alnum,
                           ltrim(regexp_replace(d, '[^0-9]', '', 'g'), '0') AS k_dig
@@ -142,8 +147,11 @@ def candidates(con, phase, model):
     items = f"""SELECT customer_id AS party_id, item_id, issue_date, currency, total_amount FROM {src(base,'ar_invoices')}
                 UNION ALL SELECT supplier_id, item_id, issue_date, currency, total_amount FROM {src(base,'ap_invoices')}"""
     if base != "train":
-        items += f""" UNION ALL SELECT party_id, item_id, issue_date, currency, open_amount
-                      FROM {src(base,'open_items_at_start')} WHERE item_type IN ('ARI','API')"""
+        open_items = f"data_cache/{base}/open_items_at_start.parquet"
+        raw_open_items = os.path.join(RAW, base, "open_items_at_start.csv.gz")
+        if os.path.exists(open_items) or os.path.exists(raw_open_items):
+            items += f""" UNION ALL SELECT party_id, item_id, issue_date, currency, open_amount
+                          FROM {src(base,'open_items_at_start')} WHERE item_type IN ('ARI','API')"""
     con.execute(f"""INSERT INTO cand
         SELECT c.bank_txn_id, c.party_id, 'amount', 'amount_exact_item', {AMOUNT_CONF}, 'item=' || min(i.item_id)
         FROM (SELECT DISTINCT bank_txn_id, party_id FROM cand) c
