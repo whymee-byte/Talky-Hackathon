@@ -101,6 +101,9 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
 
 ### T2 · Ficheros de detalle
 - **Dueño:** ouyang
+- **Estado 14:49 ✅:** hecho. Ventana: los 10 segmentos con P ≥ 98 / R ≥ 95 salvo `ap_confirming` en T2 solo
+  (P 96,0). En el pipeline, `src/sidemerge` (T10) da la línea a T2b cuando la explica; T2 aporta remesas, devoluciones
+  de recibos y `supplier_dd`. Probado "T2 gana confirming/devoluciones": neutro (87,33 = 87,33), no se integra.
 - **Salida:** `work/<fase>/side_links.parquet` (§3).
 - **Hecho cuando:** enlaza cada movimiento de lote con todas sus partidas: remesa SEPA/BACS/ACH por `batch_id`,
   devoluciones por mandato + remesa (`RETURNED`), tarjeta por comercio/fecha/neto (importe **bruto** por pedido),
@@ -112,6 +115,10 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
 
 ### T3 · Matcher con saldo vivo
 - **Dueño:** javier
+- **Estado 14:49 (en curso):** segmentos con más líneas falladas en la ventana (87,33, exactitud por línea):
+  `ar_instalment` 60 % (9.003 líneas), `ar_partial` 52 % (7.454), `ar_dispute_settlement` 15 % (2.309),
+  `ar_dd_represented_transfer` 5 % (1.900), `ar_short_discount` 87 % (11.613), `ar_same_amount_fifo` 85 % (12.405),
+  `ar_duplicate_payment` 41 % (1.183), `ap_duplicate_payment` 0 % (123), `customer_advance` 42 % (540).
 - **Entradas:** `lines`, `items`, `side_links`, `line_party`, `remit_lines`, `doc_facts`, `line_category` (mocks del
   golden mientras no existan).
 - **Salida:** `work/<fase>/pairs_raw.parquet` (§7b).
@@ -143,9 +150,8 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
   con partida ≥ 97 %; tabla F1 por clase en el PR.
 
 ### T6 · Avisos de pago ⚠ PRIORIDAD 1 tras T10 (21,9 % de los pares, R ≈ 0)
-- **Dueño:**
-- **Estado 13:55:** javier la reclamó a las 12:17, pero `src/remit/` todavía no existe. Si a las 14:30 no hay commit,
-  que la coja otra persona.
+- **Dueño:** javier
+- **Estado 14:49 ✅:** hecho (`src/remit/`, 14:00): ventana 68,11 → 85,37, LIVE 71,55 → 86,32.
 - **Salida:** `work/<fase>/remit_lines.parquet` (§5), y que T3 la consuma como etapa `remit` entre `side` y `ref`.
 - **Hallazgos (muestra de 1.500 avisos TRAIN):** hay unas **6 familias de maquetación**, todas deterministas:
   - CSV con `,` y CSV con `;`: cabecera `payment_ref,<ref>,payment_date,<d>,currency,<c>`, columnas
@@ -176,7 +182,8 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
   `src/pdffacts/extract.py` y cachear el texto en `data_cache/<fase>/remit_text.parquet`).
 
 ### T7 · Movimientos sin partida
-- **Dueño:**
+- **Dueño:** javier
+- **Estado 14:49 ✅:** hecho (`src/nonitem/`, sin LLM): `nonitem_*` ≈ 100 % en la ventana.
 - **Salida:** `work/<fase>/line_category.parquet` (§6).
 - **Hecho cuando:** normaliza el texto a patrón (sin dígitos/ids/fechas) + `bank_code` + signo; tabla patrón →
   categoría aprendida en TRAIN; patrones nuevos (camt de Moncayo, ZA01) por LLM **una llamada por patrón** con caché;
@@ -186,6 +193,8 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
 
 ### T8 · Hechos de los PDFs
 - **Dueño:** ouyang
+- **Estado 14:49 ✅:** hecho (13:05). `ar_replaced_invoice` 47,6 % y `ar_same_amount_month` 2,9 % de hechos: las partidas
+  que faltan no tienen PDF.
 - **Salida:** `work/<fase>/doc_facts.parquet` (§7).
 - **Hecho cuando:** extrae plazos, retención, anticipo a deducir, "anula y sustituye", mes de servicio, rappel
   compensado/pagado, abono reembolsado/compensado, factoring, nuevo IBAN (ES/FR/DE/EN…); regex primero, LLM sólo por
@@ -195,7 +204,12 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
   positivos.
 
 ### T9 · Drift y preparación de FINAL
-- **Dueño:** (responsable de FINAL: javier)
+- **Dueño:** javier (responsable de FINAL)
+- **Estado 14:49 ⚠:** `src/final/run_final.sh` alineado en main (1320956). **Riesgo detectado:** la misma cadena da
+  85,91 la 1.ª vez desde cero y 87,33 al repetir los pasos tras la 1.ª (determinista al repetir; diferencias en AR del
+  matcher: `ar_same_amount_fifo` 43,6 → 85,0 %, `ar_1to1` 90,9 → 99,2 %). Causa sin identificar: algún paso depende de
+  lo que deja la ejecución anterior en `work/` o `data_cache/`. Decidir antes de las 17:00 (simulacro): corregir, o
+  ejecutar dos veces si sólo reutiliza salida propia.
 - **Salida:** `src/final/run_final.sh` (un comando de punta a punta), `docs/FINAL_CHECKLIST.md`.
 - **Hecho cuando:** el pipeline completo corre en LIVE en < 15 min y **sin red** (sin LLM ni caché, todo patrón nuevo
   → categoría por defecto según signo; nunca un fallo); informe por mes de LIVE (cobertura de pares,
@@ -204,8 +218,11 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
 - **Verificar:** ensayo cronometrado con la red cortada; el fichero pasa `validate.py`; checklist firmado por el
   responsable de FINAL. **Objetivo: envío FINAL validado y subido antes de las 18:30** (el empate gana el más temprano).
 
-### T10 · Integración: un solo pipeline con todos los side_links ⚠ URGENTE (antes de las 14:30)
-- **Dueño:**
+### T10 · Integración: un solo pipeline con todos los side_links
+- **Dueño:** javier
+- **Estado 14:49 ✅:** hecho (14:07): `src/final/run_phase.sh <fase>` + `src/sidemerge` (una fuente por línea, gana
+  T2b). Ventana 85,91, LIVE 86,78. Reproducido en Windows (ouyang) con `PYTHONIOENCODING=utf-8 PY=python`. Pendiente:
+  el `manifest.json` y la diferencia entre la 1.ª ejecución y las siguientes (ver T9).
 - **Problema:** cada módulo se ejecuta a mano y los ficheros de `work/<fase>/` se desfasan. La ventana 52,62 se puntuó
   con un `side_links.parquet` antiguo (sólo `T2.dd_batch` + `T2.dd_return`, de las 12:29) y sin `side_links_ap.parquet`.
   El 82,18 de javier (13:54) depende de ficheros y código locales que no están en `main`: `src/remit/` no está y
@@ -229,6 +246,8 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
 
 ### T11 · Cliente LLM común
 - **Dueño:**
+- **Estado 14:49:** sin empezar. La cadena actual no llama a ningún LLM y funciona sin red; sólo hace falta si aparece
+  drift en FINAL que las reglas no cubran.
 - **Salida:** `src/llm/__init__.py` con `ask_json(module, prompt_version, key_text, prompt, schema) -> dict | None`.
 - **Reglas:**
   - Clave en `HACKATHON_API_KEY` y modelo en `HACKATHON_MODEL` (por defecto el Sonnet más reciente; Haiku para
@@ -254,6 +273,8 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
 
 ### T12 · FX y pagos AP: importe en divisa de la partida
 - **Dueño:**
+- **Estado 14:49 (casi hecho por T2b):** ventana `ap_fx` 97,8 % de exactitud por línea (pares R+exc 99,9),
+  `ap_partial` 99,7 %, `ap_paid_by_holding` y `ap_credit_note_netted` 100 %. Queda `ar_fx` sin medir aparte.
 - **Problema:** `ap_fx` R 1,6 %, `ar_fx` R 5 %, `FX_DIFFERENCE` R 6,8 %. El enlace de T2 existe (R 96 %), pero se pierde
   o se le pone mal el importe al cruzar divisas. `ap_partial` R 19 %, `ap_paid_by_holding` R 16 % (P 56 %),
   `ap_credit_note_netted` R 29 %.
@@ -267,7 +288,10 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
   `ap_credit_note_netted`; F1 de `FX_DIFFERENCE` ≥ 0,9.
 
 ### T13 · Abonos neteados y N:M
-- **Dueño:**
+- **Dueño:** javier (incluido `ar_n_to_m`)
+- **Estado 14:49 (pendiente, ~8.400 líneas falladas):** exactitud por línea en la ventana (87,33): `ar_1toN_credit_note`
+  51 % (6.374 líneas), `ar_n_to_m` 9,7 % (3.721), `ar_1toN_text` 85 % (12.345). javier añadió la etapa "comb mitm"
+  (fc9c5c6, 87,33 → 88,01).
 - **Problema:** `ar_1toN_credit_note` R 28 %, `ar_n_to_m` R 21 % (P 65 %). El subset-sum actual sólo admite 1–3 partidas.
 - **Hecho cuando:** completar con abonos del tercero (`related_doc` primero) cuando las facturas citadas superan el
   efectivo; subset-sum acotado de hasta 6 partidas con poda por fecha y solución única; N:M = varias líneas del
@@ -276,7 +300,10 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
   precisión global de pares no baja.
 
 ### T14 · Referencias ruidosas
-- **Dueño:**
+- **Dueño:** ouyang — módulo nuevo `src/refnoise` (filas `T14.*` en `side_links`, después de `src.fuzzref`); no toca
+  `src/fuzzref` ni `src/match`.
+- **Estado 14:49 (pendiente, el mayor hueco):** `ar_ref_noise` 82,7 % de exactitud por línea (83.717 líneas, ~14.500
+  falladas; pares P 96,9 / R 59,3). T3f (`src/fuzzref`) cubre parte; 99f09bd lo limita al top-3 de terceros.
 - **Problema:** `ar_ref_noise` R 49 % (184 k pares, el 21 % de las líneas).
 - **Hecho cuando:** casa números con 1 dígito cambiado o 2 transpuestos (distancia de Damerau 1 sobre `doc_digits`
   del tercero), truncados a 16/35/38 caracteres (prefijo ≥ 6 dígitos), sin prefijo o sin ceros; siempre restringido al
@@ -286,6 +313,7 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
 
 ### T15 · Clases de excepción a cero o con mucho FP
 - **Dueño:** galileo (dentro de T5)
+- **Estado 14:49 (pendiente):** macro-F1 de excepciones 74,5 en la ventana (objetivo 80).
 - **Problema (ventana):** `DUPLICATE_PAYMENT` F1 0 (1.306 en golden); `OVERPAYMENT` 321 TP frente a 2.823 FP;
   `PARTIAL` 10.150 TP frente a 24.669 FP; `SHORT_WITHHOLDING` R 12 %; `UNIDENTIFIED` P 45 %.
 - **Hecho cuando:**
@@ -297,6 +325,8 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
 
 ### T16 · Explicar la brecha ventana frente a LIVE (82,18 frente a 71,55)
 - **Dueño:**
+- **Estado 14:49:** la brecha se ha cerrado sola tras T6/T10 (ventana 85,91 frente a LIVE 86,78). Queda revisar las fugas
+  de la hipótesis 1 si vuelve a abrirse.
 - **Por qué importa:** FINAL se parece a LIVE, no a la ventana. Si la ventana sobreestima 10 puntos, todos los ajustes
   hechos con ella son sospechosos y el único envío FINAL puede salir mucho peor de lo esperado.
 - **Hipótesis a comprobar, en orden:**
