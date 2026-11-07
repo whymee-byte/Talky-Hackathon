@@ -107,6 +107,28 @@ def build(phase: str) -> None:
     con.execute("""INSERT INTO OUTR SELECT b.bank_txn_id, b.item_id, i.open_c, '', 'T3f.amt_' || b.how || '.unique', b.how,
                           CASE WHEN b.pok THEN 0.95 ELSE 0.8 END, 'single open item = cash, number ' || b.how
                    FROM B1 b JOIN IO i USING (item_id) WHERE (b.how <> 'typo' OR b.pok) AND b.item_id NOT IN (SELECT item_id FROM OUTR)""")
+    # stage D (POLICIES §3 SHORT_BANK_CHARGES): a single open invoice of a likely party (T4 >= 0.5), same currency,
+    # cash short by <= 60 EUR equivalent and <= 2 % (intermediary bank fee), unique for the line
+    con.execute("""CREATE TABLE FXR AS SELECT date::DATE d, currency, units_per_eur::DOUBLE u
+                   FROM read_csv('data/bankrec-docs-and-masters/masters/fx_rates.csv', all_varchar=true)""")
+    con.execute("""CREATE TABLE BC AS
+      WITH l AS (SELECT l.*, coalesce(f.u, 1.0) u FROM LT l ASOF LEFT JOIN FXR f ON f.currency = l.currency AND f.d <= l.booking_date
+                 WHERE l.bank_txn_id NOT IN (SELECT bank_txn_id FROM OUTR)),
+           c AS (SELECT l.bank_txn_id, i.item_id, i.open_c, p.confidence pconf
+                 FROM l JOIN P p USING (bank_txn_id) JOIN IO i ON i.party_id = p.party_id AND i.currency = l.currency
+                 WHERE p.confidence >= 0.5 AND i.kind = 'ARI' AND i.issue_date <= l.booking_date
+                   -- cross-border wording, a whole-unit fee, and not an early-payment discount / withholding
+                   AND regexp_matches(l.text_norm, '\\b(CHGS|SHA|BEN|OUR|GASTOS|DIV|WIRE|TT IN|SWIFT|FEES?|CHARGES)\\b')
+                   AND (i.open_c - l.cash) % 100 = 0
+                   AND NOT (i.discount_pct IS NOT NULL AND abs(i.open_c - l.cash - round(i.total_cents * i.discount_pct / 100)) <= 1)
+                   AND NOT list_has_any([abs(i.open_c - l.cash - round(i.total_cents * 0.0125)) <= 1,
+                                         abs(i.open_c - l.cash - round(i.total_cents * 0.015)) <= 1,
+                                         abs(i.open_c - l.cash - round(i.total_cents * 0.10)) <= 1], [true])
+                   AND i.open_c - l.cash > 1 AND i.open_c - l.cash <= least(6000 * CASE WHEN l.currency = 'EUR' THEN 1 ELSE l.u END, 0.02 * i.open_c))
+      SELECT * FROM c QUALIFY count(*) OVER (PARTITION BY bank_txn_id) = 1 AND count(*) OVER (PARTITION BY item_id) = 1""")
+    con.execute("""INSERT INTO OUTR SELECT bank_txn_id, item_id, open_c, 'SHORT_BANK_CHARGES', 'T3f.bank_charges.unique', 'party+amount',
+                          round(0.9 * pconf, 3), 'single open invoice of the party, cash short by <= 60 EUR and <= 2 %'
+                   FROM BC WHERE item_id NOT IN (SELECT item_id FROM OUTR)""")
     con.execute(f"COPY (SELECT * FROM OUTR) TO '{w}/fuzzref_links.parquet' (FORMAT parquet)")
     if not os.environ.get("FUZZ_NO_MERGE"):
         con.execute(f"COPY (SELECT * FROM SL0 UNION ALL BY NAME SELECT * FROM OUTR) TO '{side_p}' (FORMAT parquet)")
