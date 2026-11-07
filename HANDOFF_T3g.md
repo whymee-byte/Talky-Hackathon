@@ -66,3 +66,11 @@ P(no identificado | importe redondo, nº de facturas abiertas del tercero T4, m�
 La tabla (`src/tolmatch/unid_table.csv`) se aprende del golden de TRAIN y va versionada (FINAL no depende de una
 ventana previa). Validación honesta: aprendida sólo en Q1 y medida en Q2-Q4: **93,36 → 93,44**. LIVE (tabla de toda
 la ventana) sobre 93,55: **93,60** (s_821c6f4c5f567d9c0fca). Reaprender: `python -m src.tolmatch.unid learn`.
+
+## 6. T21 · `src/delaycomb` (perfil de retraso de pago por cliente + subconjunto único), antes de cnmore
+Idea medida contra el golden: el cliente NO paga facturas que aún no le "tocan" según su retraso mínimo habitual
+(q05 de cargo − vencimiento, aprendido de TRAIN; −7 días). Excluyendo sólo esas, el golden cabe en el 92 % de los
+cobros multi-factura que nadie casa, con ~29 candidatas en vez de 40. Con ≤ 24 candidatas y solución única del
+subset-sum: 616 únicas-correctas vs 51 únicas-incorrectas en el sondeo. En pipeline (sin golden para excluir pagadas):
+314 líneas, 955 pares, P 0,88; ventana 93,50 → 93,54; **fuera de muestra Q2-Q4 (perfil < 2024-07): 93,36 → 93,39**.
+Ampliar a 36 candidatas + abonos + rank 2-3 baja la precisión a 0,55 (descartado, parámetros por env DC_*).

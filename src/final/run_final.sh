@@ -167,8 +167,10 @@ run_stage unident T7b_unidentified
 run_stage cnfx T13b_cnfx
 run_stage duefill T20_duefill
 run_stage tolmatch T3g_tolmatch
+run_stage delaycomb T21_delaycomb
 run_stage cnmore T19_cnmore
 run_stage excfix T15_excfix
+run_stage tolpost T3g_post_overfix_unid
 
 SHA=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo nogit)
 OUT="out/${PHASE}_$(date +%Y%m%d-%H%M)_${SHA}.csv.gz"

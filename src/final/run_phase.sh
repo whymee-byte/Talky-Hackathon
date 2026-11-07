@@ -48,10 +48,10 @@ step "unidentified"     $PY -u -m src.unident     --phase "$PHASE"
 [[ -n "${NO_CNFX:-}" ]] || step "credit notes / FX sets" $PY -u -m src.cnfx --phase "$PHASE"
 step "due invoices on long receipts (T20)" $PY -u -m src.duefill --phase "$PHASE"
 [[ -n "${NO_T3G:-}" ]] || step "tolerant matches (T3g)" $PY -u -m src.tolmatch --phase "$PHASE"
+[[ -n "${NO_T3G:-}" ]] || step "delay profile combos (T21)" $PY -u -m src.delaycomb --phase "$PHASE"
 step "more credit notes (T19)" $PY -u -m src.cnmore --phase "$PHASE"
 step "last exception fixes (T15)" $PY -u -m src.excfix --phase "$PHASE"
-[[ -n "${NO_T3G:-}" ]] || step "overpayment shape (T3g)" $PY -u -m src.tolmatch --phase "$PHASE" --overfix
-[[ -n "${NO_T3G:-}" ]] || step "learned unidentified (T3u)" $PY -u -m src.tolmatch.unid apply --phase "$PHASE"
+[[ -n "${NO_T3G:-}" ]] || step "T3g post: overpayment shape + learned unidentified" $PY -u -m src.tolpost --phase "$PHASE"
 if [[ "$PHASE" == "window" || "$PHASE" == "sample" ]]; then
   step "write + score" $PY -u -m src.submit --phase "$PHASE" --from "work/$PHASE/allocations.parquet" --score
 else
