@@ -78,7 +78,7 @@ def add(con, phase, model):
                 UNION SELECT supplier_id, entity, norm(supplier_name) FROM {src(base, 'ap_invoices')}"""
     con.execute(f"""CREATE OR REPLACE TEMP TABLE pr_party AS
         WITH d AS (SELECT DISTINCT party_id, entity, regexp_replace(upper(d), '[^A-Z0-9]', '', 'g') AS doc_key,
-                          abs(CAST(round(a * 100) AS BIGINT)) AS doc_amt
+                          abs(CAST(round(CAST(a AS DOUBLE) * 100) AS BIGINT)) AS doc_amt
                    FROM ({docs}) WHERE d IS NOT NULL),
              bd AS (SELECT r.run_id, r.debtor_account_id, r.seq, d.party_id, 'payrun_doc' AS rule,
                            {CONF_DOC} / count(*) OVER (PARTITION BY r.run_id, r.debtor_account_id, r.seq, r.doc_key) AS conf,
