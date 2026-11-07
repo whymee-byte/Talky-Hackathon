@@ -31,6 +31,8 @@ PARTY_MIN = 0.30          # T4 confidence to use a candidate party for amount ma
 REF_CONF = {"alnum": 0.95, "po": 0.85, "dig": 0.90, "suf": 0.80}
 FX_TOL = 0.03             # POLICIES: bank FX spread always well within 3 %
 WHT_RATES = (0.0125, 0.015, 0.10)
+BANKCHG_EUR = 6000        # SHORT_BANK_CHARGES: shortfall <= 60 EUR equivalent ...
+BANKCHG_PCT = 0.02        # ... and <= 2 % of the item
 WHT_ENTITIES = ("MX01", "BR01", "MA01")
 
 
@@ -109,12 +111,12 @@ def build(phase):
                CASE WHEN r.icur = lt.currency THEN lt.cash
                     WHEN r.icur = lt.orig_currency THEN abs(lt.orig_amount_cents)
                     ELSE round(lt.cash / fl.u * fi.u) END AS cash_i,
-               r.icur <> lt.currency AS is_fx
+               r.icur <> lt.currency AS is_fx, coalesce(fl.u, 1.0) AS u_line
         FROM (SELECT DISTINCT bank_txn_id, icur FROM RC) r JOIN LT lt USING (bank_txn_id)
         ASOF LEFT JOIN FX fl ON fl.currency = lt.currency AND fl.d <= lt.booking_date
         ASOF LEFT JOIN FX fi ON fi.currency = r.icur AND fi.d <= lt.booking_date""")
     con.execute(f"""CREATE TABLE REFP AS
-      WITH s AS (SELECT r.*, c.cash_i, c.is_fx, lt.booking_date, lt.entity,
+      WITH s AS (SELECT r.*, c.cash_i, c.is_fx, c.u_line, lt.booking_date, lt.entity,
                         sum(r.sgn * r.open_c) OVER (PARTITION BY r.bank_txn_id) AS sum_open,
                         count(*) OVER (PARTITION BY r.bank_txn_id) AS n_ref,
                         count(DISTINCT r.icur) OVER (PARTITION BY r.bank_txn_id) AS n_cur
@@ -127,22 +129,25 @@ def build(phase):
           n_ref = 1 AND entity IN {WHT_ENTITIES} AND list_has_any(
             [abs(cash_i - round(total_cents * (1 - {WHT_RATES[0]}))) <= 1, abs(cash_i - round(total_cents * (1 - {WHT_RATES[1]}))) <= 1,
              abs(cash_i - round(total_cents * (1 - {WHT_RATES[2]}))) <= 1], [true]) AS wht,
-          n_ref = 1 AND kind IN ('ARI','API') AND cash_i > open_c + {tol('open_c')} AND cash_i <= open_c * (1 + {OVERPAY_MAX}) AS over
+          n_ref = 1 AND kind IN ('ARI','API') AND cash_i > open_c + {tol('open_c')} AND cash_i <= open_c * (1 + {OVERPAY_MAX}) AS over,
+          n_ref = 1 AND kind IN ('ARI','API') AND NOT is_fx AND cash_i < open_c - {tol('open_c')}
+            AND open_c - cash_i <= least({BANKCHG_EUR} * u_line, {BANKCHG_PCT} * open_c) AS bankchg
         FROM s WHERE n_cur = 1)
       SELECT bank_txn_id, item_id, kind, party_id, issue_date, open_c, cash_i, is_fx,
-        CASE WHEN exact OR disc OR wht THEN open_c
+        CASE WHEN exact OR disc OR wht OR (bankchg AND NOT disc AND NOT wht) THEN open_c
              WHEN n_ref = 1 AND cash_i < open_c THEN cash_i
              ELSE open_c END AS amount_cents,
         CASE WHEN is_fx AND kind IN ('ARI','API') AND (exact OR disc OR wht OR over) THEN 'FX_DIFFERENCE'
              WHEN exact THEN ''
              WHEN disc THEN 'SHORT_DISCOUNT'
              WHEN wht THEN 'SHORT_WITHHOLDING'
+             WHEN bankchg THEN 'SHORT_BANK_CHARGES'
              WHEN n_ref = 1 AND cash_i < open_c THEN 'PARTIAL'
              WHEN over THEN 'OVERPAYMENT'
              ELSE '' END AS exception,
         'T3.ref.' || CASE WHEN exact THEN 'sum_exact' WHEN disc THEN 'discount' WHEN wht THEN 'withholding'
-                          WHEN over THEN 'overpayment' WHEN n_ref = 1 THEN 'single_diff' ELSE 'multi_diff' END AS rule,
-        conf * CASE WHEN exact OR disc OR wht OR over THEN 1.0 WHEN n_ref = 1 THEN 0.8 ELSE 0.6 END AS confidence,
+                          WHEN over THEN 'overpayment' WHEN bankchg THEN 'bank_charges' WHEN n_ref = 1 THEN 'single_diff' ELSE 'multi_diff' END AS rule,
+        conf * CASE WHEN exact OR disc OR wht OR over OR bankchg THEN 1.0 WHEN n_ref = 1 THEN 0.8 ELSE 0.6 END AS confidence,
         ev || '; cash=' || cash_i || ' open_sum=' || sum_open AS evidence
       FROM d""")
 
@@ -258,7 +263,24 @@ def build(phase):
            r AS (SELECT u.*, row_number() OVER (PARTITION BY item_id ORDER BY stage, confidence DESC, bank_txn_id) AS rk
                  FROM u WHERE item_id NOT IN (SELECT item_id FROM blocked))
       SELECT * EXCLUDE (rk) FROM r
-      WHERE rk = 1 OR exception = 'PARTIAL'""")
+      WHERE rk = 1 OR exception = 'PARTIAL'
+      UNION ALL BY NAME   -- an exact single-document payment of an item another (earlier) line already cleared = duplicate
+      SELECT * EXCLUDE (rk, exception, rule, amount_cents), cash_i AS amount_cents, 'DUPLICATE_PAYMENT' AS exception,
+             'T3.ref.duplicate_in_phase' AS rule
+      FROM r WHERE rk > 1 AND stage = 1 AND rule = 'T3.ref.sum_exact' AND exception = ''
+        AND bank_txn_id IN (SELECT bank_txn_id FROM REFP GROUP BY 1 HAVING count(*) = 1)""")
+    # partial payments: the one that pays the remaining balance is the last instalment (no exception)
+    con.execute(f"""CREATE OR REPLACE TABLE T3P AS
+      WITH x AS (SELECT p.*, lt.booking_date AS bd FROM T3P p JOIN LT lt USING (bank_txn_id)),
+           c AS (SELECT *, coalesce(sum(amount_cents) FILTER (WHERE exception = 'PARTIAL') OVER (
+                     PARTITION BY item_id ORDER BY bd, bank_txn_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS paid_before
+                 FROM x)
+      SELECT * EXCLUDE (bd, paid_before, exception, rule),
+             CASE WHEN exception = 'PARTIAL' AND paid_before > 0 AND abs(amount_cents - (open_c - paid_before)) <= {tol('amount_cents')}
+                  THEN '' ELSE exception END AS exception,
+             CASE WHEN exception = 'PARTIAL' AND paid_before > 0 AND abs(amount_cents - (open_c - paid_before)) <= {tol('amount_cents')}
+                  THEN 'T3.ref.last_instalment' ELSE rule END AS rule
+      FROM c""")
     # a line keeps its pairs only if none of them was lost to another line (keep sets consistent)
     con.execute("""CREATE TABLE T3OK AS
       SELECT p.* FROM T3P p
