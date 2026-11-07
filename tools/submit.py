@@ -84,6 +84,18 @@ def upload(path: str, phase: str, token: str, api: str) -> dict:
     return sub
 
 
+def _dotenv_token():
+    """TALKY_TOKEN / HK_TOKEN from the git-ignored .env at the repo root (never printed)."""
+    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+    if not os.path.exists(p):
+        return None
+    for ln in open(p, encoding="utf-8"):
+        k, _, v = ln.strip().partition("=")
+        if k in ("TALKY_TOKEN", "HK_TOKEN") and v:
+            return v.strip().strip('"')
+    return None
+
+
 def main(argv=None) -> int:
     safe_stdout()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -111,7 +123,7 @@ def main(argv=None) -> int:
         print("REFUSED: FINAL is a single scored submission; pass --confirm <FINAL owner> after manual approval.")
         return 1
 
-    token = os.environ.get("HK_TOKEN")
+    token = os.environ.get("HK_TOKEN") or os.environ.get("TALKY_TOKEN") or _dotenv_token()
     api = os.environ.get("HK_API", HK_API_DEFAULT).rstrip("/")
     when = time.strftime("%Y-%m-%d %H:%M")
     row = f"| | {when} | {a.phase.upper()} | {git_sha()} | {os.path.basename(a.submission)} | {a.note} | | | <LIVE real> | {'subido' if not a.dry_run else 'dry-run'} | {a.confirm or '-'} |"

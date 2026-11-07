@@ -15,3 +15,4 @@
 13:51 NOTE T2b: src/sidefiles (ouyang) tiene pasos pr/card/chq en código pero work/*/side_links.parquet sólo trae dd/ret, así que hoy no hay solape con side_links_ap. Si se regeneran con pr/card/chq, el matcher leería pares duplicados (no dedup en SL): acordar que payment_runs/tarjetas/cheques salen sólo de src/sidefiles_ap (ventana P 99,98 %).
 13:53 DONE T2b LIVE: 55,15 → 71,55 (sub s_65121b49b93a96721f0e, aff5707). Ventana completa en curso.
 13:54 NOTE T2b: score ventana completo (side_links_ap + T3 v3 + T2 1-2 + T6 + T7) = 82,18 (aff5707, out/window_20261107-1353_aff5707.score.json). Pendiente: ap_confirming (17 % recall, 1 % de pares).
+14:00 DONE T6 avisos de pago (csv/xlsx/pdf/txt, maquetación sep-2025 incluida) + T3f referencias ruidosas + T5b excepciones: ventana 68,11 → 85,37; LIVE 71,55 → 86,32 (s_1fb602cfe9d11f127036). Pipeline completo: src/final/run_phase.sh <fase>

@@ -16,6 +16,8 @@ def build(phase, con=None):
     t1 = f"work/{phase}/lines.parquet"
     out = f"{out_dir(phase)}/party_lines.parquet"
     if os.path.exists(t1):
+        # later stages read party_lines.parquet by name: keep a copy of the T1 table there
+        con.execute(f"COPY (SELECT * FROM '{t1}') TO '{out}' (FORMAT parquet)")
         return t1
     base = "train" if phase in ("window", "learn") else phase
     where = {"window": f"WHERE booking_date >= DATE '{WINDOW_START}'",
