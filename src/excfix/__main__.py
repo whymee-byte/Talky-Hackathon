@@ -162,7 +162,7 @@ def _label_fixes(con, w: str) -> list:
     """Labels on rows whose pair and amount are already right (POLICIES §3):
       fx_flag    invoice (ARI/API) in a currency other than the line's, no exception → FX_DIFFERENCE (full open amount
                  already; credit notes keep none). Window: 450 of ~490 such rows are FX_DIFFERENCE in the golden.
-      wht_multi  receipt in a withholding entity (MX01/BR01/MA01) whose AR rows are all same-currency, at full amounts,
+      wht_multi  receipt in an entity of a withholding country (MX, BR, MA; POLICIES §3) whose AR rows are all same-currency, at full amounts,
                  without exception, and exceed the cash by exactly r × Σ invoice totals,
                  r ∈ {1.25 %, 1.5 %, 10 %} (± 1 cent per row) → its invoices SHORT_WITHHOLDING. Window: 134 / 139."""
     con.execute(f"""CREATE OR REPLACE TABLE LF AS
@@ -174,7 +174,7 @@ def _label_fixes(con, w: str) -> list:
                         sum(CASE WHEN i.kind = 'ARC' THEN -a.amount_cents ELSE a.amount_cents END) s_amt,
                         sum(CASE WHEN i.kind = 'ARI' THEN i.total_cents ELSE 0 END) s_tot
                  FROM A a JOIN '{w}/items.parquet' i USING (item_id) JOIN '{w}/lines.parquet' l USING (bank_txn_id)
-                 WHERE l.direction = 'IN' AND l.entity IN ('MX01', 'BR01', 'MA01')
+                 WHERE l.direction = 'IN' AND left(l.entity, 2) IN ('MX', 'BR', 'MA')   -- POLICIES §3: withholding countries
                  GROUP BY a.bank_txn_id
                  HAVING count(*) = (SELECT count(*) FROM A a2 WHERE a2.bank_txn_id = a.bank_txn_id)
                     AND bool_and(i.side = 'AR' AND i.currency = l.currency AND coalesce(a.exception, '') = ''
