@@ -43,10 +43,12 @@ ALT_RANKS = 3      # T4 ranks tried when rank 1 has no solution (0 = off)
 ALT_MIN_CONF = 0.0
 WINDOWS = [(b, a) for a in (0, 10, 31) for b in (31, 62, 93, 186)]   # (days back, days ahead) of the due date
 WIN_CN = False
-PRIO = "CASE split_part(how, '_', 1) WHEN 'subset' THEN 0 WHEN 'run' THEN 1 ELSE 2 END + CASE WHEN how LIKE '%_alt' THEN 3 ELSE 0 END"
+FIFO_TIES = False  # (window: ~45 % right, off)
+AMT_UNIQUE = False  # unique exact amount in the entity, any party: window 17 % right, breaks UNIDENTIFIED (off)  # solutions that differ only by same-amount items -> the oldest items
+PRIO = "CASE split_part(how, '_', 1) WHEN 'subset' THEN 0 WHEN 'run' THEN 1 WHEN 'win' THEN 2 ELSE 6 END + CASE WHEN how LIKE '%_alt' THEN 3 ELSE 0 END"
 AGE_MAX = {"ARI": 365, "ARC": 240}   # days between issue and receipt (TRAIN golden: 99.7 % / 99.6 % of AR pairs)
-DEFAULT_RULES = "subset,run,win,subset_alt,run_alt,win_alt"
-CONF = {"subset": 0.9, "run": 0.85, "alt": 0.6, "win": 0.7}
+DEFAULT_RULES = "subset,run,win,subset_alt,run_alt,win_alt,amt"
+CONF = {"subset": 0.9, "run": 0.85, "alt": 0.6, "win": 0.7, "amt": 0.6}
 
 
 def _sums(v: np.ndarray) -> np.ndarray:
@@ -57,7 +59,7 @@ def _sums(v: np.ndarray) -> np.ndarray:
     return s
 
 
-def subset_solutions(v: np.ndarray, t: int, cap: int = 3) -> list[np.ndarray]:
+def subset_solutions(v: np.ndarray, t: int, cap: int = 6) -> list[np.ndarray]:
     n = len(v)
     h = n // 2
     a, b = _sums(v[:h]), _sums(v[h:])
@@ -183,14 +185,21 @@ def build(phase: str, alloc: str | None = None, rules: str = DEFAULT_RULES, work
             if not sel and WINDOWS:
                 how, sel = "win", window_solutions(v, np.asarray(dd, dtype=np.int64), rem)
         diag.append((b, grp, int(n), how, len(sel)))
-        sols.setdefault(b, []).extend((grp, how, int(n), ids, x, rem) for x in sel)
+        sols.setdefault(b, []).extend((grp, how, int(n), ids, x, rem, v) for x in sel)
     picks = []
     for b, lst in sols.items():
         p1 = [x for x in lst if x[0] == "p1"]
         cand = p1 if p1 else [x for x in lst if x[0] != "p1"]
-        if len(cand) != 1:
+        if not cand or (len(cand) > 1 and not FIFO_TIES):
             continue
-        grp, how, n, ids, x, rem = cand[0]
+        if len(cand) > 1:
+            # several solutions that only swap items of the same amount: the oldest ones (pool is in issue order)
+            vals = {(c[0], tuple(sorted(int(x) for x in np.asarray(c[6])[c[4]]))) for c in cand}
+            if len(vals) != 1:
+                continue
+            cand = [min(cand, key=lambda c: (sum(c[4]), tuple(c[4])))]
+            cand[0] = cand[0][:1] + (cand[0][1] + "_fifo",) + cand[0][2:]
+        grp, how, n, ids, x, rem = cand[0][:6]
         how = how if grp == "p1" else how + "_alt"
         for k in x:
             picks.append((b, ids[k], how, n, len(x), rem))
@@ -198,7 +207,23 @@ def build(phase: str, alloc: str | None = None, rules: str = DEFAULT_RULES, work
     P = pd.DataFrame(picks, columns=["bank_txn_id", "item_id", "how", "n", "k", "rem"])
     con.register("Pdf", P)
     con.execute("CREATE TABLE PICK AS SELECT * FROM Pdf")
-    con.execute(f"DELETE FROM PICK WHERE how NOT IN ({', '.join(repr(r) for r in keep) or 'NULL'})")
+    con.execute(f"DELETE FROM PICK WHERE replace(how, '_fifo', '') NOT IN ({', '.join(repr(r) for r in keep) or 'NULL'})")
+    if AMT_UNIQUE:
+        # receipts with no item still unsolved: the only open invoice of the entity (any party) whose open amount is
+        # the cash, if no other unsolved receipt wants it
+        con.execute(f"""INSERT INTO PICK
+          WITH t AS (SELECT LT.*, l.entity FROM LT JOIN '{w}/lines.parquet' l USING (bank_txn_id)
+                     WHERE LT.nit = 0 AND LT.bank_txn_id NOT IN (SELECT bank_txn_id FROM PICK)),
+               tk AS (SELECT t.*, t.rem + d k FROM t, (SELECT unnest(range(-{TOL}, {TOL} + 1)) d)),
+               ie AS (SELECT i.*, e.entity FROM I i JOIN (SELECT item_id, entity FROM '{w}/items.parquet') e USING (item_id)
+                      WHERE i.kind = 'ARI' AND i.item_id NOT IN (SELECT item_id FROM USED)
+                        AND i.item_id NOT IN (SELECT item_id FROM PICK)),
+               c AS (SELECT tk.bank_txn_id, ie.item_id, tk.rem FROM tk JOIN ie
+                       ON ie.open_c = tk.k AND ie.currency = tk.tcur AND ie.entity = tk.entity
+                     WHERE ie.issue_date <= tk.bd AND tk.bd - ie.issue_date <= {AGE_MAX['ARI']}),
+               u AS (SELECT * FROM c QUALIFY count(*) OVER (PARTITION BY bank_txn_id) = 1
+                                         AND count(*) OVER (PARTITION BY item_id) = 1)
+          SELECT bank_txn_id, item_id, 'amt', 1, 1, rem FROM u""")
     if not WIN_CN:   # window sets with a credit note land on the right items < 50 % of the time
         con.execute("""DELETE FROM PICK WHERE how LIKE 'win%' AND bank_txn_id IN
                        (SELECT bank_txn_id FROM PICK JOIN I USING (item_id) WHERE I.kind = 'ARC')""")
@@ -218,7 +243,7 @@ def build(phase: str, alloc: str | None = None, rules: str = DEFAULT_RULES, work
              CASE WHEN tcur <> lcur AND kind = 'ARI' THEN 'FX_DIFFERENCE' ELSE '' END exception,
              'T3x.' || how || '.' || CASE WHEN tcur <> lcur THEN 'fx' WHEN has_cn THEN 'cn' ELSE 'plain' END
                || CASE WHEN nit > 0 THEN '.add' ELSE '' END rule,
-             CASE how WHEN 'subset' THEN {CONF['subset']} WHEN 'run' THEN {CONF['run']} WHEN 'win' THEN {CONF['win']} ELSE {CONF['alt']} END confidence,
+             CASE how WHEN 'subset' THEN {CONF['subset']} WHEN 'run' THEN {CONF['run']} WHEN 'win' THEN {CONF['win']} WHEN 'amt' THEN {CONF['amt']} ELSE {CONF['alt']} END confidence,
              'party open items: ' || k || ' of ' || n || ' sum to the ' || tcur || ' amount left ' || rem
                || ' (unique ' || how || ')' evidence
       FROM f""")
