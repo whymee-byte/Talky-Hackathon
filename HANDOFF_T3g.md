@@ -50,3 +50,40 @@ Informe de fallos de la base 93,32: `FAIL_REPORT_933.md` (generado con `tools/an
 Hallazgo: `ar_short_dispute` pierde 31.838 pares (~1 punto) en 378 cobros grandes **sin aviso de pago en los datos**
 (comprobado por nº de factura, importe y fechas); pagan ~56 de ~728 facturas abiertas sin bloque por emisión ni
 vencimiento → no recuperable sin el aviso.
+
+## 4. `--overfix` (paso final, después de excfix)
+Un OVERPAYMENT cuyo exceso sobre la partida no es un importe entero ni exactamente el 1 %/10 % es un cobro que paga
+más partidas → sin excepción (se conserva el par). Ventana 3fd558e: 93,37 → **93,50**; OVERPAYMENT F1 0,737 → 0,834
+(FP 210 → 94; en T5.overpayment conserva 320/320 aciertos y quita 125 de 126 falsos). Total de esta rama sobre la
+base 93,32: **+0,18**. Paso en run_phase.sh: `step "overpayment shape (T3g)" ... src.tolmatch --overfix`.
+
+**LIVE (main 3fd558e + T3g + overfix): 93,55** (s_d7e8e717d7ed733f5480, `out/live_AB5_overfix_3fd558e.csv.gz`),
+frente a 93,33 de la base → **+0,22**.
+
+## 5. T3u · `src/tolmatch/unid.py` (tabla aprendida de no identificados, último paso)
+Añade la excepción UNIDENTIFIED a cobros sin partida con categoría UNIDENTIFIED que el pipeline dejó sin ella, si
+P(no identificado | importe redondo, nº de facturas abiertas del tercero T4, método y confianza de T4) ≥ 0,45.
+La tabla (`src/tolmatch/unid_table.csv`) se aprende del golden de TRAIN y va versionada (FINAL no depende de una
+ventana previa). Validación honesta: aprendida sólo en Q1 y medida en Q2-Q4: **93,36 → 93,44**. LIVE (tabla de toda
+la ventana) sobre 93,55: **93,60** (s_821c6f4c5f567d9c0fca). Reaprender: `python -m src.tolmatch.unid learn`.
+
+## 6. T21 · `src/delaycomb` (perfil de retraso de pago por cliente + subconjunto único), antes de cnmore
+Idea medida contra el golden: el cliente NO paga facturas que aún no le "tocan" según su retraso mínimo habitual
+(q05 de cargo − vencimiento, aprendido de TRAIN; −7 días). Excluyendo sólo esas, el golden cabe en el 92 % de los
+cobros multi-factura que nadie casa, con ~29 candidatas en vez de 40. Con ≤ 24 candidatas y solución única del
+subset-sum: 616 únicas-correctas vs 51 únicas-incorrectas en el sondeo. En pipeline (sin golden para excluir pagadas):
+314 líneas, 955 pares, P 0,88; ventana 93,50 → 93,54; **fuera de muestra Q2-Q4 (perfil < 2024-07): 93,36 → 93,39**.
+Ampliar a 36 candidatas + abonos + rank 2-3 baja la precisión a 0,55 (descartado, parámetros por env DC_*).
+
+## 7. Medida sobre main 70a361c (el main que da 93,88 en LIVE)
+| ventana | score | Q2-Q4 fuera de muestra |
+|---|---|---|
+| main + delaycomb (T21) | 93,49 | 93,36 |
+| main + delaycomb + tolpost (overfix + T3u) | **93,67** | **93,53** |
+`tolpost` = +0,18 (macro-F1 89,33 → 90,12), consistente fuera de muestra (+0,17). `delaycomb` ≈ +0,02 (955 pares,
+P 0,88). Recomendación: integrar los tres (sin riesgo medido; NO_T3G=1 los apaga). LIVE en curso.
+
+## 8. Rama javier/t3u-on-94 (sobre main c9259f6, el que da 94,03 en LIVE)
+Ese main ya lleva mi --overfix en run_phase.sh **pero no en run_final.sh** (termina en excfix): avisado. Esta rama:
+`src.tolpost` (overfix + T3u) tras excfix en run_phase.sh y run_final.sh; `src.delaycomb` antes de cnmore en ambos.
+Lo nuevo frente a 94,03 es T3u (+delaycomb). Ventana en curso.
