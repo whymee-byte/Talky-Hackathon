@@ -9,6 +9,16 @@ from src.exceptions.engine import decide
 
 
 class MergePriorityTests(unittest.TestCase):
+    @staticmethod
+    def _base_inputs(pairs, lines, items, customers=None):
+        fx = pl.DataFrame({"date": [], "currency": [], "units_per_eur": []}, schema={
+            "date": pl.Date, "currency": pl.String, "units_per_eur": pl.Float64,
+        })
+        return decide(
+            pl.DataFrame(pairs), pl.DataFrame(lines), pl.DataFrame(items),
+            pl.DataFrame(customers or {"customer_id": [], "country": []}), fx,
+        )
+
     def test_t2_side_link_wins_stale_pair_overlap(self):
         side = pl.DataFrame({
             "bank_txn_id": ["BT-1", "BT-2"],
@@ -96,6 +106,45 @@ class MergePriorityTests(unittest.TestCase):
     def test_empty_merge_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "at least one"):
             _merge_priority([])
+
+    def test_return_hint_precedes_duplicate_and_reopens_paid_item(self):
+        out = self._base_inputs(
+            {
+                "bank_txn_id": ["BT-RETURN"], "item_id": ["ARI-RETURN"],
+                "booking_date": [date(2025, 1, 10)], "line_amount_cents": [10000],
+                "line_currency": ["EUR"], "item_currency": ["EUR"],
+                "open_before_cents": [0], "cash_cents": [10000], "doc_hint": [None],
+                "rule": ["T3.mock"], "confidence": [1.0], "evidence": ["mock"],
+            },
+            {"bank_txn_id": ["BT-RETURN"], "amount_cents": [-10000],
+             "booking_date": [date(2025, 1, 10)], "currency": ["EUR"],
+             "direction": ["OUT"], "is_return_hint": [True]},
+            {"item_id": ["ARI-RETURN"], "kind": ["ARI"], "total_cents": [10000],
+             "currency": ["EUR"]},
+        )
+        self.assertEqual(out["exception"].to_list(), ["RETURNED"])
+        self.assertEqual(out["amount_cents"].to_list(), [10000])
+
+    def test_multi_item_partial_uses_each_pair_applied_amount(self):
+        out = self._base_inputs(
+            {
+                "bank_txn_id": ["BT-PARTIAL", "BT-PARTIAL"],
+                "item_id": ["ARI-P1", "ARI-P2"],
+                "booking_date": [date(2025, 1, 10)] * 2,
+                "line_amount_cents": [15000, 15000], "line_currency": ["EUR", "EUR"],
+                "item_currency": ["EUR", "EUR"], "open_before_cents": [10000, 10000],
+                "cash_cents": [7000, 10000], "doc_hint": [None, None],
+                "rule": ["T3.mock", "T3.mock"], "confidence": [1.0, 1.0],
+                "evidence": ["mock", "mock"],
+            },
+            {"bank_txn_id": ["BT-PARTIAL"], "amount_cents": [17000],
+             "booking_date": [date(2025, 1, 10)], "currency": ["EUR"],
+             "direction": ["IN"]},
+            {"item_id": ["ARI-P1", "ARI-P2"], "kind": ["ARI", "ARI"],
+             "total_cents": [10000, 10000], "currency": ["EUR", "EUR"]},
+        ).sort("item_id")
+        self.assertEqual(out["exception"].to_list(), ["PARTIAL", None])
+        self.assertEqual(out["amount_cents"].to_list(), [7000, 10000])
 
 
 if __name__ == "__main__":
