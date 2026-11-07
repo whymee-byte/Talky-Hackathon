@@ -9,6 +9,8 @@ Not filled yet (left null/empty, owned by T1): month_hint, doc_tokens is a simpl
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import sys
 import time
@@ -28,16 +30,69 @@ def csv(path: str) -> str:
     return "read_csv('" + p + "', all_varchar=true, header=true, quote='\"', escape='\"', delim=',')"
 
 
+def input_signature(phase: str, data: str | None, pdir: str) -> str:
+    """Return a cache key from phase and all input file metadata.
+
+    Metadata is deliberately included for every CSV, including masters and the
+    pre-window golden.  A changed file size or mtime invalidates the cache,
+    while avoiding another full pass over multi-million-row CSVs.
+    """
+    roots = [phase_dir(x, data) for x in {"sample": ["sample"], "window": ["train"],
+             "train": ["train"], "live": ["train", "live"],
+             "final": ["train", "live", "final"]}[phase]]
+    roots += [os.path.join(pdir, "..", "masters"), pdir]
+    files = []
+    for root in roots:
+        if os.path.isdir(root):
+            for base, _, names in os.walk(root):
+                for name in sorted(names):
+                    path = os.path.join(base, name)
+                    if name.endswith((".csv", ".csv.gz")):
+                        st = os.stat(path)
+                        files.append((os.path.relpath(path, REPO), st.st_size, st.st_mtime_ns))
+    payload = json.dumps({"phase": phase, "window": [str(WINDOW_START), str(WINDOW_END)],
+                         "files": sorted(set(files))}, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def cached_result(out: str, key: str) -> dict | None:
+    manifest = os.path.join(out, ".base_parquet_manifest.json")
+    if not all(os.path.exists(os.path.join(out, name)) for name in ("lines.parquet", "items.parquet", manifest)):
+        return None
+    try:
+        with open(manifest, encoding="utf-8") as fh:
+            if json.load(fh).get("signature") != key:
+                return None
+        con = duckdb.connect()
+        try:
+            lines = con.sql(f"select count(*), count(distinct bank_txn_id) from read_parquet('{out}/lines.parquet')").fetchall()[0]
+            items = con.sql(f"select count(*), count(distinct item_id), sum((open_at_start_cents > 0)::int) from read_parquet('{out}/items.parquet')").fetchall()[0]
+        finally:
+            con.close()
+        print("[base_parquet] cache hit: reusing signature-matched parquet", flush=True)
+        return {"lines": lines, "items": items}
+    except (OSError, duckdb.Error, ValueError):
+        return None
+
+
 def build(phase: str, data: str | None = None) -> dict:
     con = duckdb.connect()
     con.sql("set preserve_insertion_order=false")
     out = os.path.join(REPO, "work", phase)
     os.makedirs(out, exist_ok=True)
     pdir = phase_dir(phase, data)
+    signature = input_signature(phase, data, pdir)
+    hit = cached_result(out, signature)
+    if hit is not None:
+        return hit
+    print(f"[base_parquet] building {phase}; input signature {signature[:12]}", flush=True)
 
     # ---------------------------------------------------------------- lines (§1)
     where = (f"where booking_date between '{WINDOW_START}' and '{WINDOW_END}'" if phase == "window" else "")
-    con.sql(f"create view bt_raw as select * from {csv(os.path.join(pdir, 'bank_transactions.csv.gz'))}")
+    # Materialize once: the window balance query also needs the bank rows and
+    # DuckDB otherwise reparses this large CSV a second time.
+    con.sql(f"create table bt_raw as select * from {csv(os.path.join(pdir, 'bank_transactions.csv.gz'))}")
+    print("[base_parquet] loaded bank transactions", flush=True)
     con.sql(f"""
     create table lines as
     with b as (
@@ -67,6 +122,7 @@ def build(phase: str, data: str | None = None) -> dict:
     """)
     con.sql(f"copy lines to '{os.path.join(out, 'lines.parquet')}' (format parquet)")
     n_lines = con.sql("select count(*), count(distinct bank_txn_id) from lines").fetchall()[0]
+    print(f"[base_parquet] wrote lines: {n_lines[0]:,}", flush=True)
 
     # ---------------------------------------------------------------- items (§2)
     sources = {"sample": ["sample"], "window": ["train"], "train": ["train"], "live": ["train", "live"], "final": ["train", "live", "final"]}[phase]
@@ -139,6 +195,9 @@ def build(phase: str, data: str | None = None) -> dict:
     """)
     con.sql(f"copy items to '{os.path.join(out, 'items.parquet')}' (format parquet)")
     n_items = con.sql("select count(*), count(distinct item_id), sum((open_at_start_cents > 0)::int) from items").fetchall()[0]
+    with open(os.path.join(out, ".base_parquet_manifest.json"), "w", encoding="utf-8") as fh:
+        json.dump({"signature": signature, "phase": phase}, fh)
+    print(f"[base_parquet] wrote items: {n_items[0]:,}", flush=True)
     return {"lines": n_lines, "items": n_items}
 
 
