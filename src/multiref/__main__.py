@@ -32,7 +32,7 @@ import time
 
 import duckdb
 
-from src.common import REPO
+from src.common import REPO, safe_stdout
 
 NMAX = 14          # bitmask subset enumeration up to 2^14 subsets per line
 ROUNDS = 6         # greedy token -> item assignment rounds
@@ -175,6 +175,7 @@ def build(phase: str, alloc: str | None = None, rules: str = DEFAULT_RULES) -> N
 
 
 def main():
+    safe_stdout()
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", required=True, choices=["sample", "window", "live", "final"])
     ap.add_argument("--alloc", help="allocations parquet to rewrite (default work/<phase>/allocations.parquet)")
