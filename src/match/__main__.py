@@ -183,15 +183,23 @@ def build(phase):
     con.execute("""CREATE TABLE AM AS SELECT * FROM AC1 WHERE month_ok
                    QUALIFY row_number() OVER (PARTITION BY bank_txn_id ORDER BY issue_date DESC, item_id) = 1
                        AND row_number() OVER (PARTITION BY item_id ORDER BY bank_txn_id) = 1""")
-    con.execute("""CREATE TABLE AF AS
-      WITH c AS (SELECT a.*, l.booking_date, l.cash FROM AC1 a JOIN LT l USING (bank_txn_id)
-                 WHERE a.bank_txn_id NOT IN (SELECT bank_txn_id FROM AM) AND a.item_id NOT IN (SELECT item_id FROM AM)),
-           ln AS (SELECT DISTINCT bank_txn_id, party_id, cash, booking_date FROM c),
-           lr AS (SELECT *, row_number() OVER (PARTITION BY party_id, cash ORDER BY booking_date, bank_txn_id) AS r FROM ln),
-           it AS (SELECT DISTINCT item_id, party_id, cash, issue_date FROM c),
-           ir AS (SELECT *, row_number() OVER (PARTITION BY party_id, cash ORDER BY issue_date, item_id) AS r FROM it)
-      SELECT c.* EXCLUDE (booking_date, cash) FROM lr JOIN ir USING (party_id, cash, r)
-      JOIN c ON c.bank_txn_id = lr.bank_txn_id AND c.item_id = ir.item_id""")
+    # FIFO (POLICIES §6): in booking order, each line takes the OLDEST still-unused open item of (party, amount) issued
+    # on or before its date. Greedy per (party, cash) group — groups are small (a few lines each), the loop is over
+    # ~10^4 candidate rows, not over the phase. Items already taken by side links, references or the month rule are out.
+    fifo = con.sql("""SELECT a.bank_txn_id, a.item_id, a.party_id, l.cash, l.booking_date, a.issue_date
+                      FROM AC1 a JOIN LT l USING (bank_txn_id)
+                      WHERE a.bank_txn_id NOT IN (SELECT bank_txn_id FROM AM) AND a.item_id NOT IN (SELECT item_id FROM AM)
+                        AND a.item_id NOT IN (SELECT item_id FROM SL) AND a.item_id NOT IN (SELECT item_id FROM REFP)
+                      ORDER BY a.party_id, l.cash, l.booking_date, a.bank_txn_id, a.issue_date, a.item_id""").fetchall()
+    picks, used, done = [], set(), set()
+    for t, i, party, cash, bd, idate in fifo:      # rows come ordered: line by date, then its items oldest first
+        if t in done or (party, cash, i) in used:
+            continue
+        picks.append((t, i)); used.add((party, cash, i)); done.add(t)
+    import pandas as pd
+    fp_df = pd.DataFrame(picks, columns=["bank_txn_id", "item_id"], dtype="object")  # noqa: F841 (read by duckdb)
+    con.execute("CREATE TABLE FP AS SELECT bank_txn_id::VARCHAR bank_txn_id, item_id::VARCHAR item_id FROM fp_df")
+    con.execute("""CREATE TABLE AF AS SELECT a.* FROM AC1 a JOIN FP USING (bank_txn_id, item_id)""")
     con.execute("""CREATE TABLE AMTP AS
       SELECT bank_txn_id, item_id, kind, party_id, issue_date, open_c, open_c AS cash_i, false AS is_fx, open_c AS amount_cents,
              CASE how WHEN 'discount' THEN 'SHORT_DISCOUNT' ELSE '' END AS exception,
