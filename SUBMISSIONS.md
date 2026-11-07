@@ -7,4 +7,4 @@ FINAL: un único envío válido.
 
 | # | Fecha y hora | Fase | Commit | Fichero | Hipótesis (qué cambia y por qué) | Ventana local | LIVE esperado | LIVE real | Estado | Confirmado por |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1 | | LIVE | | | Envío válido trivial (T0): pares exactos del starter + resto `UNIDENTIFIED`/`BANK_FEES`. Prueba el circuito. | | 10–19 | | | — |
+| 1 | 2026-11-07 11:19 | LIVE | fb9197d | `live_20261107-1111_fb9197d.csv.gz` (sub `s_a13bdd1907376b352f85`) | Envío válido trivial (T0): pares exactos del starter + resto `UNIDENTIFIED`/`BANK_FEES`. Prueba el circuito. `sample`: 11,28 (= starter). | — (sin `train/` en local) | 10–19 | **11,47** (F1 8,42 · P 99,31 · R 4,39 · macro-F1 0,88) | scored | — |
