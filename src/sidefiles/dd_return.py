@@ -98,7 +98,47 @@ def step_ret(con, load_dd, resolve_receipts, dirs) -> str | None:
                     '; collected=', p.collection_date, '; lag=', p.lag, '; n_cand=', p.n_cand, '; lag_density=', round(p.p, 4),
                     case when p.moved then '; skipped_receipt_taken' else '' end, '; amount=receipt') evidence
       from ret_pick p join ret_item r using (rid)""")
+    step_represented(con)
+    con.sql("insert into links_ret select * from links_rep")
     return "links_ret"
+
+
+def step_represented(con) -> None:
+    """T2.dd_represented · a returned receipt paid again by transfer (ar_dd_represented_transfer).
+
+    IN line without mandate (a transfer, not a new direct debit), same entity, amount = the returned receipt, booked in
+    the 120 days after the return, quoting the customer: debtor IBAN in the line, debtor name (prefix: banks truncate)
+    in the text, or the receipt reference / document number in the text → the item of the returned receipt, no
+    exception, amount = the receipt. One line per returned receipt and vice versa (closest date, strongest signal).
+    """
+    con.sql(f"""create or replace table rep_cand as
+      with r as (select p.bank_txn_id ret_txn, rl.booking_date ret_date, d.rid, d.amount_cents, d.debtor_iban,
+                        {NORM.format(x='d.debtor_name')} dname, {NORM.format(x='d.ref')} rnorm, a.entity, ri.item_id,
+                        i.doc_norm, i.doc_digits
+                 from ret_pick p join lines rl on rl.bank_txn_id = p.bank_txn_id
+                 join dd d using (rid) join ret_item ri using (rid) join items i on i.item_id = ri.item_id
+                 join (select account_id, any_value(entity) entity from lines group by 1) a on a.account_id = d.account_id),
+           l as (select bank_txn_id, entity, booking_date, amount_cents, ibans, doc_tokens, ' ' || text_norm || ' ' tx
+                 from lines where direction = 'IN' and len(mandate_ids) = 0)
+      select l.bank_txn_id, r.ret_txn, r.rid, r.item_id, r.amount_cents, (l.booking_date - r.ret_date)::int lag,
+             coalesce(list_contains(l.ibans, r.debtor_iban), false) iban_ok,
+             length(r.dname) >= 6 and contains(l.tx, ' ' || left(r.dname, least(length(r.dname), 14))) name_ok,
+             (length(r.rnorm) >= 5 and contains(l.tx, ' ' || r.rnorm || ' '))
+               or coalesce(list_contains(l.doc_tokens, r.doc_norm), false)
+               or (length(r.doc_digits) >= 6 and contains(regexp_replace(l.tx, '[^0-9 ]', '', 'g'), right(r.doc_digits, 6))) ref_ok
+      from r join l on l.entity = r.entity and l.amount_cents = r.amount_cents
+                   and l.booking_date > r.ret_date and l.booking_date <= r.ret_date + 120""")
+    con.sql("""create or replace table links_rep as
+      with c as (select *, 2 * ref_ok::int + iban_ok::int + name_ok::int strength from rep_cand where ref_ok or iban_ok or name_ok),
+           c1 as (select * from c qualify row_number() over (partition by bank_txn_id order by strength desc, lag, rid) = 1),
+           c2 as (select *, count(*) over (partition by ret_txn) n_lines from c1
+                  qualify row_number() over (partition by ret_txn order by strength desc, lag, bank_txn_id) = 1)
+      select bank_txn_id, item_id, amount_cents, '' exception, 'T2.dd_represented' rule, ret_txn link_key,
+             round(case when strength >= 3 then 0.95 when ref_ok then 0.9 when strength = 2 then 0.85 else 0.7 end
+                   * case when n_lines = 1 then 1.0 else 0.85 end, 3) confidence,
+             concat('returned receipt re-paid by transfer; return=', ret_txn, '; lag=', lag, ' d; ref_ok=', ref_ok,
+                    '; iban_ok=', iban_ok, '; name_ok=', name_ok, '; candidates=', n_lines) evidence
+      from c2""")
 
 
 def learn(data: str | None = None) -> None:
