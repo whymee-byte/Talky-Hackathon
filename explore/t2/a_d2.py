@@ -1,0 +1,15 @@
+exec(open("explore/t2/a_d1.py").read().split('show("select count(*) golden_pairs')[0])
+con.sql(f"create table gall as select bank_txn_id, item_id, segment from read_csv('data/train/golden_allocations.csv.gz', all_varchar=true, {q}) where bank_txn_id in (select bank_txn_id from lines)")
+con.sql("create table ours as select * from links_pr where rule = 'T2.run_confirming'")
+print("FP breakdown: golden of our line / where the golden puts our item")
+show("""select coalesce(gs.segment, '(line not in golden?)') line_seg, (gi.item_id is not null) pair_ok, (gx.bank_txn_id is not null) item_settled_elsewhere_in_q1, count(*)
+        from ours o left join (select bank_txn_id, any_value(segment) segment from gall group by 1) gs using(bank_txn_id)
+        left join gall gi on gi.bank_txn_id = o.bank_txn_id and gi.item_id = o.item_id
+        left join (select item_id, any_value(bank_txn_id) bank_txn_id from gall group by 1) gx on gx.item_id = o.item_id and gi.item_id is null
+        group by all order by 4 desc""")
+print("confirming runs: execution date vs the golden debit date")
+show("""select gd.gbd - gd.ex d, count(*) from gd where ex is not null group by 1 order by 2 desc limit 8""")
+con.sql(f"create table prall as select run_id, run_type, execution_date::date ex, document_number from read_csv({glob_csv(detail_dirs('window', None), 'payment_runs')[9:].split(', all_varchar')[0]}, all_varchar=true, union_by_name=true, {q}) where run_type='confirming'")
+print("golden pairs with no pr doc: is the doc in the raw (unfiltered) payment runs, and when executed?")
+show("""select (p.document_number is not null) in_raw, min(p.ex), max(p.ex), count(distinct gd.item_id) from gd join items i using(item_id)
+        left join prall p on trim(regexp_replace(strip_accents(upper(p.document_number)), '[^A-Z0-9]+', ' ', 'g')) = i.doc_norm where gd.did is null group by 1""")

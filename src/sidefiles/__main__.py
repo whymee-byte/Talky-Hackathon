@@ -106,6 +106,7 @@ def resolve_receipts(con, src_table: str, out_table: str):
     create or replace table {out_table} as
     with r as (
       select s.*, {NORM.format(x='s.ref')} ref_norm, {DIGITS.format(x='s.ref')} ref_digits,
+             nullif(regexp_extract({NORM.format(x='s.ref')}, '(?:^| )([0-9]{{4,}})$', 1), '') ref_tail,
              coalesce(cm.customer_id, ci.customer_id) party_id
       from {src_table} s
       left join (select sepa_mandate_id, any_value(customer_id) customer_id from customers where sepa_mandate_id <> '' group by 1) cm
@@ -117,7 +118,9 @@ def resolve_receipts(con, src_table: str, out_table: str):
       select r.rid, i.item_id, i.entity = r.entity same_entity,
              (i.doc_norm = r.ref_norm or i.doc_norm = replace(r.ref_norm, ' ', '')) doc_exact,
              (r.ref_digits is not null and (i.doc_digits = r.ref_digits
-               or (length(r.ref_digits) >= 6 and ends_with(i.doc_digits, r.ref_digits)))) doc_digits,
+               or (length(r.ref_digits) >= 6 and ends_with(i.doc_digits, r.ref_digits))
+               -- last number group of the reference = last number group of the document (RECIBO 22311 ~ FT24-01-22311)
+               or (r.ref_tail is not null and regexp_extract(i.doc_norm, '(?:^| )([0-9]+)$', 1) = r.ref_tail))) doc_digits,
              (i.open_at_start_cents = r.amount_cents or i.total_cents = r.amount_cents) amt_ok,
              i.issue_date
       from r join items i on i.party_id = r.party_id and i.side = 'AR' and i.kind = 'ARI'
@@ -173,45 +176,9 @@ def step_dd(con, dirs) -> str | None:
 
 
 def step_ret(con, dirs) -> str | None:
-    """Direct-debit return (R-transaction): OUT line quoting the mandate (and in ES/PT the batch) → the receipt it
-    reverses (same mandate, same amount, latest collection on or before the booking date) → that receipt's item,
-    RETURNED, amount = the receipt (the original allocation)."""
-    if not load_dd(con, dirs):
-        return None
-    con.sql("""create or replace table ret_pick as
-      with rl0 as (
-        select l.bank_txn_id, l.booking_date, -l.amount_cents amt,
-               list_concat(l.batch_refs, regexp_extract_all(l.text_norm, '(?:DEV|REM) ?([0-9]{11})', 1)) batch_refs,
-               unnest(l.mandate_ids) mandate_id,
-               nullif(regexp_extract(' ' || l.text_norm || ' ', ' ((?:AC|AM|MD|MS|SL|BE|AG|RR|RC|FF|DT|CN|ED|FO|MI|NO|PY|RF|TM)[0-9]{2}) ', 1), '') code
-        from lines l where l.direction = 'OUT' and len(l.mandate_ids) > 0),
-      rl as (
-        -- SEPA R-transaction timing: MD06 (refund requested by the debtor) comes weeks later; other codes within ~2 weeks
-        select *, case when code = 'MD06' then 14 when code is not null then 2 else 2 end lag_min,
-                  case when code = 'MD06' then 80 when code is not null then 16 else 80 end lag_max
-        from rl0)
-      select rl.bank_txn_id, d.rid, d.batch_id, d.mandate_id, d.amount_cents, d.collection_date, rl.code,
-             list_contains(rl.batch_refs, d.batch_id) batch_in_text
-      from rl join dd d on d.mandate_id = rl.mandate_id and d.amount_cents = rl.amt
-                       and d.collection_date <= rl.booking_date - to_days(rl.lag_min)
-                       and d.collection_date >= rl.booking_date - to_days(rl.lag_max)
-      qualify row_number() over (partition by rl.bank_txn_id order by list_contains(rl.batch_refs, d.batch_id) desc,
-                                 -- MD06 refunds: closest to the typical delay (median learned on TRAIN < 2024-07, no leakage: 46 d, n=1567); others: latest
-                                 case when rl.code = 'MD06' then abs((rl.booking_date - d.collection_date) - 46) else 0 end,
-                                 d.collection_date desc, d.rid) = 1""")
-    con.sql("""create or replace table ret_src as
-      select d.rid, a.entity, d.mandate_id, d.debtor_iban, d.ref, d.amount_cents
-      from dd d join (select distinct rid from ret_pick) p using (rid)
-      join (select account_id, any_value(entity) entity from lines group by 1) a using (account_id)""")
-    resolve_receipts(con, "ret_src", "ret_item")
-    con.sql("""create or replace table links_ret as
-      select p.bank_txn_id, r.item_id, p.amount_cents, 'RETURNED' exception, 'T2.dd_return' rule, p.batch_id link_key,
-             round(case when p.batch_in_text then 1.0 else 0.9 end
-                   * case when r.doc_exact or r.doc_digits then 1.0 when r.n_tied = 1 then 0.85 else 0.6 end, 3) confidence,
-             concat('mandate=', p.mandate_id, '; code=', coalesce(p.code, '?'), '; batch_id=', p.batch_id, '; batch_in_text=', p.batch_in_text,
-                    '; collected=', p.collection_date, '; amount=receipt') evidence
-      from ret_pick p join ret_item r using (rid)""")
-    return "links_ret"
+    """Direct-debit return (R-transaction) → the receipt it reverses → that receipt's item, RETURNED (dd_return.py)."""
+    from src.sidefiles import dd_return
+    return dd_return.step_ret(con, load_dd, resolve_receipts, dirs)
 
 
 def out_name(subset: str | None = None, tag: str | None = None) -> str:

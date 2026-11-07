@@ -1,0 +1,6 @@
+exec(open("explore/t2/a_d1.py").read().split('show("select count(*) golden_pairs')[0])
+con.sql("create table ge as select e2e, any_value(gl) gl, any_value(gbd) gbd from gd where e2e is not null group by 1")
+con.sql("create table ge2 as select ge.*, e.due emax, e.run_id from ge join pr_cf_e2e e on e.end_to_end_id = ge.e2e")
+show("select gbd - emax d, count(*) n from ge2 group by 1 order by 1", 60)
+print("by weekday of the e2e maturity (0=Sun)")
+show("select dayofweek(emax) dow, count(*) n, median(gbd - emax) med, min(gbd - emax) mn, max(gbd - emax) mx from ge2 group by 1 order by 1")

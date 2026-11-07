@@ -14,6 +14,55 @@ from src.sidefiles import runs_return
 NORM = "trim(regexp_replace(strip_accents(upper(coalesce({x}, ''))), '[^A-Z0-9]+', ' ', 'g'))"
 
 
+def _confirming_repair(con) -> None:
+    """Some transfers are paid later than their maturity (no rule predicts it): the debit amount must be the sum of its
+    transfers, so fix the debits that do not add up, only when the fix is unique (exact cents, subsets of size ≤ 2):
+    1. debit over-assigned → remove the single transfer (or pair) whose amount closes the gap;
+    2. debit under-assigned (or with nothing assigned) → add the single unassigned transfer (or pair) of the same run,
+       maturing before the debit, whose amount closes the gap; a transfer claimed by two debits is not added.
+    Edits pr_cf_e2e_line in place."""
+    con.sql("""create or replace table cf_d as
+      select bank_txn_id, any_value(line_cents) line_cents, sum(cents) s from pr_cf_e2e_line group by 1""")
+    con.sql("""create or replace table cf_rm as
+      with over as (select * from cf_d where s > line_cents),
+           sol as (
+             select a.bank_txn_id, [a.end_to_end_id] rm, 1 k from over o join pr_cf_e2e_line a using (bank_txn_id)
+             where a.cents = o.s - o.line_cents
+             union all
+             select a.bank_txn_id, [a.end_to_end_id, b.end_to_end_id], 2 from over o join pr_cf_e2e_line a using (bank_txn_id)
+             join pr_cf_e2e_line b on b.bank_txn_id = a.bank_txn_id and a.end_to_end_id < b.end_to_end_id
+             where a.cents + b.cents = o.s - o.line_cents),
+           best as (select * from sol qualify k = min(k) over (partition by bank_txn_id))
+      select bank_txn_id, any_value(rm) rm from best group by 1 having count(*) = 1""")
+    con.sql("""delete from pr_cf_e2e_line where (bank_txn_id, end_to_end_id) in
+               (select bank_txn_id, unnest(rm) from cf_rm)""")
+    # every debit of the confirming runs seen in the phase, with what is still missing
+    con.sql("""create or replace table cf_gap as
+      with r as (select distinct run_id, run_raw, account_id from pr_cf_e2e),
+           d as (select r.run_id, l.bank_txn_id, l.booking_date, -l.amount_cents line_cents
+                 from r join lines l on l.direction = 'OUT' and l.account_id = r.account_id and list_contains(l.batch_refs, r.run_raw))
+      select d.*, line_cents - coalesce((select sum(cents) from pr_cf_e2e_line a where a.bank_txn_id = d.bank_txn_id), 0) gap
+      from d""")
+    con.sql("""create or replace table cf_add as
+      with free as (select e.* from pr_cf_e2e e
+                    where e.end_to_end_id not in (select end_to_end_id from pr_cf_e2e_line)),
+           sol as (
+             select g.bank_txn_id, [f.end_to_end_id] add, 1 k from cf_gap g join free f on f.run_id = g.run_id
+             where g.gap > 0 and f.cents = g.gap and f.expected < g.booking_date
+             union all
+             select g.bank_txn_id, [f.end_to_end_id, h.end_to_end_id], 2 from cf_gap g join free f on f.run_id = g.run_id
+             join free h on h.run_id = g.run_id and f.end_to_end_id < h.end_to_end_id
+             where g.gap > 0 and f.cents + h.cents = g.gap and f.expected < g.booking_date and h.expected < g.booking_date),
+           best as (select * from sol qualify k = min(k) over (partition by bank_txn_id)),
+           uniq as (select bank_txn_id, any_value(add) add from best group by 1 having count(*) = 1),
+           claims as (select bank_txn_id, unnest(add) end_to_end_id from uniq)
+      select c.bank_txn_id, c.end_to_end_id from claims c
+      where c.end_to_end_id in (select end_to_end_id from claims group by 1 having count(*) = 1)""")
+    con.sql("""insert into pr_cf_e2e_line
+      select e.run_id, e.end_to_end_id, e.cents, a.bank_txn_id, g.line_cents, g.booking_date - e.expected
+      from cf_add a join pr_cf_e2e e using (end_to_end_id) join cf_gap g using (bank_txn_id)""")
+
+
 def step_pr(con, src: str | None) -> str | None:
     if not src:
         return None
@@ -29,8 +78,10 @@ def step_pr(con, src: str | None) -> str | None:
              round(document_amount::double * 100)::bigint doc_cents
       from (select distinct * from {src})""")
     # restrict to runs whose execution is near the lines of the phase (window/live) — keeps joins small
-    con.sql("""delete from pr where execution_date < (select min(booking_date) - 30 from lines)
-                               or execution_date > (select max(booking_date) + 5 from lines)""")
+    # confirming is debited at the maturity of the invoices, months after the run is executed → longer horizon
+    con.sql("""delete from pr where execution_date > (select max(booking_date) + 5 from lines)
+                               or execution_date < (select min(booking_date) from lines)
+                                                   - case when run_type = 'confirming' then 200 else 30 end""")
 
     # ---------------------------------------------------------------- docs → items
     con.sql(f"""create or replace table pr_item as
@@ -81,18 +132,22 @@ def step_pr(con, src: str | None) -> str | None:
                                  abs(l.booking_date - r.d), l.bank_txn_id) = 1""")
 
     # ---------------------------------------------------------------- confirming: line ↔ (run, maturity)
-    # the bank pays each confirming transfer (e2e) at its maturity = latest due date of its documents, and debits us
-    # on the first run debit on/after it (weekends shift it 1–2 days); the debit amount checks the grouping.
+    # the bank pays each confirming transfer (e2e, never split across debits) at its maturity = latest due date of its
+    # documents, and debits us that day — rolled to the next business day when it falls on a weekend (Sat +2, Sun +1);
+    # a few days of slack for bank holidays. No debit in that slot → no link (a later debit belongs to another
+    # maturity). The debit total checks the grouping (confidence).
     con.sql("""create or replace table pr_cf_e2e as
-      select p.run_id, any_value(p.run_raw) run_raw, p.end_to_end_id, any_value(p.debtor_account_id) account_id, any_value(p.transfer_cents) cents,
-             max(coalesce(pi.due_date, p.execution_date)) due
-      from pr p left join pr_item pi using (did) where p.run_type = 'confirming' group by p.run_id, p.end_to_end_id""")
-    # (an ASOF assignment by cumulative amounts was tried and measured worse: P 70,8 % vs 87,3 %)
+      select *, due + case dayofweek(due) when 6 then 2 when 0 then 1 else 0 end expected
+      from (select p.run_id, any_value(p.run_raw) run_raw, p.end_to_end_id, any_value(p.debtor_account_id) account_id,
+                   any_value(p.transfer_cents) cents, max(coalesce(pi.due_date, p.execution_date)) due
+            from pr p left join pr_item pi using (did) where p.run_type = 'confirming' group by p.run_id, p.end_to_end_id)""")
+    # (tried and worse: ASOF by cumulative amounts, P 70,8 %; "first debit within +10 days", P 78,8 %)
     con.sql("""create or replace table pr_cf_e2e_line as
-      select e.run_id, e.end_to_end_id, e.cents, l.bank_txn_id, -l.amount_cents line_cents
+      select e.run_id, e.end_to_end_id, e.cents, l.bank_txn_id, -l.amount_cents line_cents, l.booking_date - e.expected slack
       from pr_cf_e2e e join lines l on l.direction = 'OUT' and l.account_id = e.account_id
-           and list_contains(l.batch_refs, e.run_raw) and l.booking_date >= e.due and l.booking_date <= e.due + 10
+           and list_contains(l.batch_refs, e.run_raw) and l.booking_date between e.expected and e.expected + 3
       qualify row_number() over (partition by e.end_to_end_id order by l.booking_date, l.bank_txn_id) = 1""")
+    _confirming_repair(con)      # (a second pass was measured: no change)
     con.sql("""create or replace table pr_cf_line as
       select bank_txn_id, end_to_end_id, run_id, sum(cents) over (partition by bank_txn_id) = line_cents total_ok
       from pr_cf_e2e_line""")
