@@ -55,8 +55,8 @@ def extract(phase: str, data: str | None = None, workers: int = 8) -> str:
     texts: list[str] = []
     t0 = time.time()
     with ProcessPoolExecutor(max_workers=workers) as ex:
-        for i, out in enumerate(ex.map(_chunk, chunks)):
-            texts.extend(out)
+        for i, chunk_texts in enumerate(ex.map(_chunk, chunks)):   # not `out`: that is the parquet path
+            texts.extend(chunk_texts)
             if i % 20 == 0:
                 print(f"  {len(texts)}/{len(paths)} pdfs ({time.time() - t0:.0f}s)", flush=True)
     cols = {k: [r[k] for r in rows] for k in rows[0]}
