@@ -25,6 +25,8 @@ MONTHS = {1: "ENERO JANUARY JANVIER JANUAR GENNAIO JANEIRO STYCZEN", 2: "FEBRERO
           12: "DICIEMBRE DECEMBER DECEMBRE DEZEMBER DICEMBRE DEZEMBRO GRUDZIEN"}
 UNIDENT_MAX_PARTY = 0.5  # a receipt is flagged UNIDENTIFIED only if T4 has no party at >= 0.5
 OVERPAY_MAX = 0.10       # golden overpayments exceed the open amount by <= ~10 %; more = the line pays more items
+COMB_PARTY_MIN = 0.5   # subset-sum only with a fairly sure party
+COMB_MAX_ITEMS = 40    # most recent open items of the party considered for combinations
 PARTY_MIN = 0.30          # T4 confidence to use a candidate party for amount matching (~F1/2 after calibration)
 REF_CONF = {"alnum": 0.95, "po": 0.85, "dig": 0.90, "suf": 0.80}
 FX_TOL = 0.03             # POLICIES: bank FX spread always well within 3 %
@@ -193,9 +195,64 @@ def build(phase):
              'party=' || party_id || ' conf=' || round(pconf, 2) || '; candidates=' || n_cand AS evidence
       FROM (SELECT * FROM AM UNION ALL SELECT * FROM AF)""")
 
+    # ------------------------------------------------------------------ comb: subset of the party's open items = cash
+    # base = items already referenced in the text (may be empty); remainder R = cash - sum(base) is completed with
+    # 1-3 more open items (credit notes count negative). Only unique solutions are accepted.
+    con.execute(f"""CREATE TABLE CB AS     -- lines to complete: (line, party, base sum, remainder)
+      WITH refmis AS (
+        SELECT bank_txn_id, any_value(party_id) party_id, count(DISTINCT party_id) np,
+               sum(CASE WHEN kind IN ('ARC','APC') AND kind <> CASE (SELECT direction FROM LT l WHERE l.bank_txn_id = r.bank_txn_id)
+                        WHEN 'IN' THEN 'APC' ELSE 'ARC' END THEN -open_c ELSE open_c END) base_sum,
+               any_value(cash_i) cash
+        FROM REFP r WHERE rule IN ('T3.ref.multi_diff', 'T3.ref.single_diff') AND NOT is_fx
+        GROUP BY 1 HAVING np = 1),
+      pure AS (
+        SELECT lt.bank_txn_id, p.party_id, 0 base_sum, lt.cash
+        FROM LT lt JOIN P p ON p.bank_txn_id = lt.bank_txn_id AND p.rank = 1 AND p.confidence >= {COMB_PARTY_MIN}
+        WHERE lt.bank_txn_id NOT IN (SELECT bank_txn_id FROM REFP) AND lt.bank_txn_id NOT IN (SELECT bank_txn_id FROM AMTP))
+      SELECT bank_txn_id, party_id, base_sum, cash - base_sum AS rem, true AS has_base FROM refmis WHERE cash <> base_sum
+      UNION ALL SELECT bank_txn_id, party_id, 0, cash, false FROM pure""")
+    con.execute(f"""CREATE TABLE CI AS     -- candidate items per line (signed value v)
+      SELECT cb.bank_txn_id, i.item_id, i.kind, i.issue_date, i.open_at_start_cents open_c,
+             ks.sgn * i.open_at_start_cents AS v
+      FROM CB cb JOIN LT lt USING (bank_txn_id)
+      JOIN IO i ON i.party_id = cb.party_id AND i.currency = lt.currency AND i.issue_date <= lt.booking_date
+           AND i.issue_date >= lt.booking_date - INTERVAL 400 DAY
+      JOIN KS ks ON ks.direction = lt.direction AND ks.kind = i.kind
+      WHERE i.item_id NOT IN (SELECT item_id FROM REFP r WHERE r.bank_txn_id = cb.bank_txn_id)
+      QUALIFY row_number() OVER (PARTITION BY cb.bank_txn_id ORDER BY i.issue_date DESC, i.item_id) <= {COMB_MAX_ITEMS}""")
+    con.execute("""CREATE TABLE CS AS     -- solutions of size 1 (completion only), 2 and 3
+      WITH s1 AS (SELECT c.bank_txn_id, [c.item_id] items FROM CI c JOIN CB cb USING (bank_txn_id)
+                  WHERE cb.has_base AND c.v = cb.rem),
+           s2 AS (SELECT a.bank_txn_id, [a.item_id, b.item_id] items FROM CI a JOIN CB cb USING (bank_txn_id)
+                  JOIN CI b ON b.bank_txn_id = a.bank_txn_id AND b.item_id > a.item_id AND b.v = cb.rem - a.v),
+           ab AS (SELECT a.bank_txn_id, a.item_id ia, b.item_id ib, a.v + b.v vab FROM CI a
+                  JOIN CI b ON b.bank_txn_id = a.bank_txn_id AND b.item_id > a.item_id),
+           s3 AS (SELECT ab.bank_txn_id, [ab.ia, ab.ib, c.item_id] items FROM ab JOIN CB cb USING (bank_txn_id)
+                  JOIN CI c ON c.bank_txn_id = ab.bank_txn_id AND c.item_id > ab.ib AND c.v = cb.rem - ab.vab),
+           best AS (   -- smallest solution size wins; it must be unique at that size
+             SELECT bank_txn_id, items, len(items) k FROM (SELECT * FROM s1 UNION ALL SELECT * FROM s2 UNION ALL SELECT * FROM s3)
+             QUALIFY len(items) = min(len(items)) OVER (PARTITION BY bank_txn_id))
+      SELECT bank_txn_id, any_value(items) items, any_value(k) k FROM best GROUP BY 1 HAVING count(*) = 1""")
+    con.execute("DROP TABLE CI")
+    con.execute(f"""CREATE TABLE COMBP AS
+      WITH found AS (SELECT cs.bank_txn_id, unnest(cs.items) item_id, cs.k FROM CS cs),
+           base AS (SELECT r.bank_txn_id, r.item_id, cs.k FROM REFP r JOIN CS cs USING (bank_txn_id)),
+           allp AS (SELECT bank_txn_id, item_id, k, 'found' src FROM found UNION ALL SELECT bank_txn_id, item_id, k, 'base' FROM base)
+      SELECT a.bank_txn_id, a.item_id, i.kind, i.party_id, i.issue_date, i.open_at_start_cents open_c,
+             i.open_at_start_cents cash_i, false is_fx, i.open_at_start_cents amount_cents, '' exception,
+             'T3.comb.' || CASE WHEN cb.has_base THEN 'ref_plus_' ELSE 'party_' END || a.k AS rule,
+             coalesce(p.confidence, 0.9) * CASE a.k WHEN 1 THEN 0.9 WHEN 2 THEN 0.8 ELSE 0.7 END AS confidence,
+             'subset of ' || a.k || ' item(s) = remainder ' || cb.rem || ' (' || a.src || ')' AS evidence
+      FROM allp a JOIN CB cb USING (bank_txn_id) JOIN I i USING (item_id)
+      LEFT JOIN P p ON p.bank_txn_id = a.bank_txn_id AND p.rank = 1""")
+    print(con.sql("SELECT rule, count(DISTINCT bank_txn_id) lines, count(*) pairs FROM COMBP GROUP BY 1 ORDER BY 1").df().to_string(index=False))
+
     # ------------------------------------------------------------------ arbitration: each item settled once
     con.execute("""CREATE TABLE T3P AS
-      WITH u AS (SELECT *, 1 AS stage FROM REFP UNION ALL BY NAME SELECT *, 2 AS stage FROM AMTP),
+      WITH u AS (SELECT *, 1 AS stage FROM REFP WHERE bank_txn_id NOT IN (SELECT bank_txn_id FROM COMBP)
+                 UNION ALL BY NAME SELECT *, 1 AS stage FROM COMBP
+                 UNION ALL BY NAME SELECT *, 2 AS stage FROM AMTP),
            -- an item fully cleared by a side link or by a stronger line is not available any more
            blocked AS (SELECT DISTINCT item_id FROM SL),
            r AS (SELECT u.*, row_number() OVER (PARTITION BY item_id ORDER BY stage, confidence DESC, bank_txn_id) AS rk
@@ -206,7 +263,9 @@ def build(phase):
     con.execute("""CREATE TABLE T3OK AS
       SELECT p.* FROM T3P p
       WHERE p.bank_txn_id NOT IN (
-        SELECT u.bank_txn_id FROM (SELECT bank_txn_id, item_id FROM REFP UNION ALL SELECT bank_txn_id, item_id FROM AMTP) u
+        SELECT u.bank_txn_id FROM (SELECT bank_txn_id, item_id FROM REFP WHERE bank_txn_id NOT IN (SELECT bank_txn_id FROM COMBP)
+                                   UNION ALL SELECT bank_txn_id, item_id FROM COMBP
+                                   UNION ALL SELECT bank_txn_id, item_id FROM AMTP) u
         LEFT JOIN T3P x USING (bank_txn_id, item_id) WHERE x.item_id IS NULL)""")
     con.execute(f"""COPY (SELECT t.bank_txn_id, t.item_id, lt.booking_date, lt.amount_cents AS line_amount_cents,
                          lt.currency AS line_currency, i.currency AS item_currency, t.open_c AS open_before_cents,
