@@ -22,8 +22,9 @@
 ## Cómo se envía
 
 Script oficial en la web `/enviar` (4 pasos: pedir URL → subir a S3 → `POST /score` → consultar cada 5 s). El token del
-equipo va en la variable `HK_TOKEN`, **nunca** en el código. Lo envolvemos en `tools/submit.py` (tarea T0) y sólo se
-ejecuta tras escribir la hipótesis en `SUBMISSIONS.md` y tener el OK del responsable.
+equipo va en la variable `HK_TOKEN`, **nunca** en el código. Lo envolvemos en `tools/submit.py` (tarea T0). LIVE: se
+sube lo que mejora en la ventana y se apunta en `SUBMISSIONS.md`. FINAL: OK manual del responsable y subida antes de las
+18:30 (el empate gana el envío más temprano).
 
 ## Las tres métricas (leído en `starter/bankrec_score.py`)
 
@@ -88,10 +89,12 @@ Segmentos con más movimientos (% de líneas): `ar_ref_noise` 21,0 · `ap_paymen
 4. **Avisos de pago**: `ar_1toN_remittance` + `ar_short_dispute` ≈ 20 % de los pares y la clase `SHORT_DISPUTE`.
 5. **Movimientos sin partida**: 9,6 % de las líneas con muy pocos patrones de texto (ver DOMAIN): puntos fáciles de
    accuracy y la clase `UNIDENTIFIED`.
-6. **Importe correcto en la divisa de la partida**: en liquidación completa (`FX_*`, `SHORT_*` salvo disputa,
+6. **Umbral de casación ≈ F1/2**: F1 = 2·TP/(P+G), así que un par con p de acierto compensa si p > F1/2 (~0,4).
+   Abstenerse de más hunde el recall; ajustar en la ventana.
+7. **Importe correcto en la divisa de la partida**: en liquidación completa (`FX_*`, `SHORT_*` salvo disputa,
    `OVERPAYMENT`) va el **saldo completo**; en `PARTIAL`/`SHORT_DISPUTE`, lo pagado. Un importe mal puesto anula el par
    (F1) y la línea (accuracy).
-7. **Robustez al drift** para el único envío FINAL (ver DOMAIN §Drift).
+8. **Robustez al drift** para el único envío FINAL (ver DOMAIN §Drift).
 
 ## Primer envío seguro (T0)
 

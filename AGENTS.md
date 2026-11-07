@@ -15,8 +15,10 @@ directo y un **único** envío FINAL. Este fichero y `AGENTS.md` son idénticos:
 - **Reglas generales, nunca casos a fuego.** Prohibido escribir en el código ids, nombres, importes, textos o fechas
   concretas de las líneas que se puntúan (LIVE/FINAL) ni "parches" para filas sueltas de TRAIN: hay un benchmark oculto.
   Sí valen patrones, umbrales y tablas **aprendidas** de TRAIN o leídas de los maestros y de `POLICIES.md`.
-- **Precisión primero.** Si no estás seguro, abstente: cobro sin partida segura → `UNIDENTIFIED`; nada de forzar un
-  parecido. Un par falso cuesta más que uno que falta.
+- **Umbral de decisión ajustado en la ventana** (óptimo teórico de F1 ≈ F1/2). Ni forzar ni abstenerse por defecto.
+  Con F1 = 2·TP/(P+G), añadir un par con probabilidad p de ser correcto sube el F1 esperado si y sólo si p > F1/2
+  (≈ 0,4 con F1 ≈ 0,8). Ajustes finos con el scorer oficial: en cobros, abstenerse da `UNIDENTIFIED` (clase de la
+  macro-F1) y la exactitud por movimiento también cuenta. Partir de ~0,4, no de "un umbral alto".
 - **Volumen en código determinista.** Todo lo masivo (casar, saldos, lotes, excepciones) con duckdb/polars en columnas;
   nunca bucles Python fila a fila sobre millones de filas; nunca imprimir salidas grandes.
 - **LLM sólo sobre patrones únicos.** Una llamada por patrón (texto normalizado, maquetación de aviso, plantilla de PDF),
@@ -40,8 +42,11 @@ directo y un **único** envío FINAL. Este fichero y `AGENTS.md` son idénticos:
 
 ## Envíos a la clasificación
 
-- **Antes de cualquier envío** (LIVE o FINAL) escribe en `SUBMISSIONS.md` la hipótesis, el commit, la nota de ventana y
-  la nota LIVE esperada, y **pide confirmación al responsable del equipo**. Sin su OK no se envía.
+- **LIVE:** sin confirmación. Filtro: sólo se sube lo que **mejora en la ventana local**. Apunta cada envío en
+  `SUBMISSIONS.md` (commit, nota de ventana, nota LIVE).
+- **FINAL:** confirmación manual del responsable de FINAL antes de subir (hipótesis y nota esperada en `SUBMISSIONS.md`).
 - Valida siempre con `tools/validate.py` antes de subir. El token va en `HK_TOKEN` (variable de entorno).
-- FINAL: **un único envío**. Congelación de `main` a las 17:30; simulacro con LIVE a las 17:00; datos FINAL a las 18:00;
-  cierre 19:30. Ver `TASKS.md` T9.
+- FINAL: **un único envío** y **el empate gana el más temprano**: objetivo, envío FINAL validado **antes de las 18:30**.
+  Congelación de `main` a las 17:30; simulacro con LIVE a las 17:00; datos FINAL a las 18:00; cierre 19:30.
+  `src/final/run_final.sh` debe funcionar **sin red**: patrón nuevo sin LLM disponible (o sin caché) → categoría por
+  defecto, nunca un fallo. Ver `TASKS.md` T9.

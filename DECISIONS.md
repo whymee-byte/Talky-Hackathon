@@ -13,8 +13,10 @@ medida de la ventana o de LIVE).
 - A) `UNIDENTIFIED/UNIDENTIFIED` (abstenerse).
 - B) La mejor candidata aunque sea dudosa.
 - C) Mejor candidata sólo si `confidence ≥ umbral` ajustado en la ventana; si no, A.
-- **Recomendación:** C con umbral alto (precisión primero). Un par falso cuesta precisión **y** la línea; la
-  abstención acierta en los `UNIDENTIFIED` reales (34,6 k en TRAIN, clase de la macro-F1) y en el resto sólo pierde
+- **Decidido (11:15): C** con umbral ajustado en la ventana, partiendo de **≈ F1/2 (~0,4)**, el óptimo teórico de F1
+  (añadir un par con p de acierto sube el F1 esperado si p > F1/2). No "umbral alto": abstenerse de más hunde el
+  recall. Ajuste fino con el scorer oficial: la abstención en cobros da `UNIDENTIFIED` (clase de la macro-F1) y la
+  exactitud por movimiento también cuenta; antes se recomendaba un umbral alto, descartado porque en el resto pierde
   recall.
 
 ### D3 · Pago (cargo) sin partida segura
@@ -48,12 +50,12 @@ medida de la ventana o de LIVE).
 ### D7 · Partidas que ya no están abiertas al inicio de LIVE/FINAL
 - A) Ignorarlas (sólo casar contra abiertas).
 - B) Permitir casarlas sólo como `DUPLICATE_PAYMENT` con evidencia fuerte (referencia exacta + importe).
-- **Recomendación:** B. `DUPLICATE_PAYMENT` es una clase (≈ 2 puntos) y por definición apunta a partidas ya liquidadas.
+- **Decidido (11:15): B.** `DUPLICATE_PAYMENT` es una clase (≈ 2 puntos) y por definición apunta a partidas ya liquidadas.
 
 ### D8 · Clases raras de excepción
 - A) Detectarlas sólo con reglas exactas de `POLICIES.md`.
 - B) Además, modelo aprendido en TRAIN.
-- **Recomendación:** A. Cada clase vale lo mismo en la macro-F1; las reglas de la política son exactas y generalizan a
+- **Decidido (11:15): A.** Cada clase vale lo mismo en la macro-F1; las reglas de la política son exactas y generalizan a
   FINAL; un modelo puede sobreajustar a patrones de TRAIN.
 
 ### D9 · Entidades y cuentas fuera de `masters/` (ZA01 ya en LIVE; FINAL trae `masters_final/`)
@@ -64,7 +66,8 @@ medida de la ventana o de LIVE).
 ### D10 · Congelación para FINAL
 - A) Congelar `main` a las 17:30 y sólo arreglar fallos.
 - B) Seguir mejorando hasta las 19:00.
-- **Recomendación:** A. Simulacro con LIVE a las 17:00; a las 18:00 sólo se ejecuta y se valida. Un único envío: un
+- **Recomendación:** A. Simulacro con LIVE a las 17:00; a las 18:00 sólo se ejecuta y se valida; **FINAL subido antes de
+  las 18:30** (el empate gana el más temprano). Un único envío: un
   fallo tardío no se recupera.
 
 ### D11 · Idioma de la documentación
@@ -82,4 +85,5 @@ céntimos `int64`.
 - C) A, añadiendo de B la tabla de inputs oficiales, la distinción oficial/derivado y las validaciones previas (ya hecho).
 - **Recomendación:** C. Lo que más vale de B (evidencia trazable) ya lo cubren `rule/confidence/evidence`. Si el equipo
   quiere una tabla de candidatos con ranking (`04_match_candidates`), cabe como salida de depuración de T3 sin cambiar
-  ningún contrato. **Pendiente de que galileog lo confirme.**
+  ningún contrato.
+- **Decidido (11:15): C.** Cerrado sin más discusión: `work/<fase>/`, céntimos `int64`, ficheros por módulo.

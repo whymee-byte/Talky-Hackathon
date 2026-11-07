@@ -233,7 +233,7 @@ El resultado también puede mostrar métricas auxiliares como precisión, recall
 3. **Distinguir excepciones parecidas**: el 20 % restante usa macro-F1. Es especialmente importante diferenciar parcial, descuento válido, disputa, devolución, duplicado, diferencia de cambio y no identificado.
 4. **Usar la unidad correcta del importe**: las filas de partidas se expresan en la moneda del documento, no necesariamente en la moneda de la cuenta bancaria.
 5. **Reconocer lotes y relaciones de grupo**: una transferencia de una matriz, una fábrica de pagos o una remesa puede explicar varias partidas de otra sociedad.
-6. **No forzar coincidencias**: un cobro no identificado bien clasificado es mejor que una factura incorrecta con el mismo importe.
+6. **No forzar coincidencias ni abstenerse de más**: un par compensa si su probabilidad de acierto supera F1/2 (≈ 0,4). Un parecido sólo por importe suele estar por debajo; ahí, `UNIDENTIFIED`.
 7. **Respetar la tolerancia**: un importe fuera de `max(0.01, 0.5 % del importe de referencia)` no cuenta como la asignación correcta aunque el documento elegido sea correcto.
 
 Para conocer las reglas operativas completas, consulta [`data/POLICIES.md`](../data/POLICIES.md). Para las restricciones de CSV, validación y envío, consulta [`data/FORMAT.md`](../data/FORMAT.md).
@@ -281,11 +281,12 @@ ni importes 0, ni fechas valor raras.
 
 | Error | Qué pierde |
 |---|---|
-| Casar un cobro a una factura parecida que no es | 1 par falso (precisión F1) + la línea mal + quizás un FP de excepción. Peor que no casar. |
+| Casar un cobro a una factura parecida que no es | 1 par falso (precisión F1) + la línea mal + quizás un FP de excepción. Compensa casar sólo si p(correcto) > F1/2 (ver `CLAUDE.md`). |
 | Casar la factura correcta con importe mal (p. ej. lo cobrado en vez del saldo completo en `SHORT_DISCOUNT`/`FX_DIFFERENCE`) | el par no cuenta (F1) y la línea está mal |
 | Poner la excepción equivocada o ninguna | la línea está mal (accuracy) y la clase pierde F1 |
 | Dejar sin marcar una clase entera (p. ej. nunca emitir `OVERPAYMENT`) | ≈ 2 puntos |
 | Olvidar líneas de la fase | cada una cuenta como fallo |
+| Abstenerse de más | hunde el recall del 50 % de la nota: con F1 ≈ 0,8 compensa incluir todo par con p > 0,4 |
 | Casar una partida ya liquidada sin marcar `DUPLICATE_PAYMENT` | par probablemente falso; hay que llevar saldos |
 | Usar un `item_id` de una factura anulada ("anula y sustituye") | par falso: se liquida la sustituta |
 
