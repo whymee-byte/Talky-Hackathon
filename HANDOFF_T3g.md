@@ -56,3 +56,13 @@ Un OVERPAYMENT cuyo exceso sobre la partida no es un importe entero ni exactamen
 más partidas → sin excepción (se conserva el par). Ventana 3fd558e: 93,37 → **93,50**; OVERPAYMENT F1 0,737 → 0,834
 (FP 210 → 94; en T5.overpayment conserva 320/320 aciertos y quita 125 de 126 falsos). Total de esta rama sobre la
 base 93,32: **+0,18**. Paso en run_phase.sh: `step "overpayment shape (T3g)" ... src.tolmatch --overfix`.
+
+**LIVE (main 3fd558e + T3g + overfix): 93,55** (s_d7e8e717d7ed733f5480, `out/live_AB5_overfix_3fd558e.csv.gz`),
+frente a 93,33 de la base → **+0,22**.
+
+## 5. T3u · `src/tolmatch/unid.py` (tabla aprendida de no identificados, último paso)
+Añade la excepción UNIDENTIFIED a cobros sin partida con categoría UNIDENTIFIED que el pipeline dejó sin ella, si
+P(no identificado | importe redondo, nº de facturas abiertas del tercero T4, método y confianza de T4) ≥ 0,45.
+La tabla (`src/tolmatch/unid_table.csv`) se aprende del golden de TRAIN y va versionada (FINAL no depende de una
+ventana previa). Validación honesta: aprendida sólo en Q1 y medida en Q2-Q4: **93,36 → 93,44**. LIVE (tabla de toda
+la ventana) sobre 93,55: **93,60** (s_821c6f4c5f567d9c0fca). Reaprender: `python -m src.tolmatch.unid learn`.
