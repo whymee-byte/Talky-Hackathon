@@ -10,6 +10,7 @@ Rules (rule ids are stable, used in the audit trail):
 from __future__ import annotations
 
 import argparse
+import glob
 import os
 import sys
 import time
@@ -30,11 +31,41 @@ def detail_dirs(phase: str, data: str | None) -> list[str]:
 
 
 def glob_csv(dirs: list[str], sub: str) -> str | None:
-    pats = [os.path.join(d, sub, "*.csv").replace(os.sep, "/") for d in dirs if os.path.isdir(os.path.join(d, sub))]
-    if not pats:
+    # macOS can leave AppleDouble sidecars (._name.csv) beside data files.
+    # They are not input tables and may not be UTF-8 encoded.
+    files = [
+        path.replace(os.sep, "/")
+        for directory in dirs
+        for path in glob.glob(os.path.join(directory, sub, "*.csv"))
+        if not os.path.basename(path).startswith("._")
+    ]
+    if not files:
         return None
-    lst = ", ".join(f"'{p}'" for p in pats)
+    lst = ", ".join(f"'{path}'" for path in files)
     return f"read_csv([{lst}], all_varchar=true, header=true, union_by_name=true, quote='\"', escape='\"', delim=',')"
+
+
+def ensure_base_parquets(phase: str, data: str | None) -> None:
+    """Ensure T2's T1-contract inputs exist, building the temporary CSV adapter if needed.
+
+    T1 currently emits JSONL rather than the shared ``lines.parquet`` and
+    ``items.parquet`` contracts. Keep this fallback local to T2 so a clean
+    phase run does not depend on someone having invoked ``src.base_parquet``
+    manually. Once T1 produces both contract files, this remains a no-op.
+    """
+    work = os.path.join(REPO, "work", phase)
+    required = (os.path.join(work, "lines.parquet"), os.path.join(work, "items.parquet"))
+    if all(os.path.isfile(path) for path in required):
+        return
+
+    from src.base_parquet.__main__ import build as build_base_parquets
+
+    build_base_parquets(phase, data)
+    missing = [path for path in required if not os.path.isfile(path)]
+    if missing:
+        raise FileNotFoundError(
+            "base Parquet builder did not produce required T2 inputs: " + ", ".join(missing)
+        )
 
 
 NORM = "trim(regexp_replace(strip_accents(upper(coalesce({x}, ''))), '[^A-Z0-9]+', ' ', 'g'))"
@@ -42,6 +73,7 @@ DIGITS = "nullif(ltrim(regexp_replace(coalesce({x}, ''), '[^0-9]', '', 'g'), '0'
 
 
 def setup(con, phase: str, data: str | None):
+    ensure_base_parquets(phase, data)
     work = os.path.join(REPO, "work", phase).replace(os.sep, "/")
     con.sql(f"create view lines as select * from '{work}/lines.parquet'")
     con.sql(f"create view items as select * from '{work}/items.parquet'")

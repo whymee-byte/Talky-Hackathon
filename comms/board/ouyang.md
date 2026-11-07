@@ -8,3 +8,4 @@
 11:25 CLAIM T2 ficheros de detalle (src/sidefiles/)
 11:25 NOTE T1 aún no escribe work/<fase>/lines.parquet ni items.parquet (src/base saca JSONL de extractos brutos con ids propios). Para no bloquear T2 añado src/base_parquet/ (constructor interino de §1/§2 desde los CSV oficiales, duckdb, <15 s por fase). @galileo: cuando T1 escriba los Parquet del contrato, se borra.
 11:36 DONE T2 paso 1 remesas: ar_dd_batch ventana P 99,79 % / R 99,79 % (185.248 pares); ventana 11,38 → 21,91; LIVE 11,47 → 21,75
+11:45 NOTE T2 auto-construye lines/items Parquet contractuales si faltan mediante src/base_parquet; excluye sidecars AppleDouble ._*.csv que rompían lectura DuckDB en window
