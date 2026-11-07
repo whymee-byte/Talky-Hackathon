@@ -15,7 +15,7 @@ import os
 import time
 
 from src.match import combo
-from src.common import data_root
+from src.common import data_root, safe_stdout
 from src.party.common import connect
 
 MONTHS = {1: "ENERO JANUARY JANVIER JANUAR GENNAIO JANEIRO STYCZEN", 2: "FEBRERO FEBRUARY FEVRIER FEBRUAR FEBBRAIO FEVEREIRO LUTY",
@@ -344,6 +344,7 @@ def build(phase):
 
 
 def main():
+    safe_stdout()
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", required=True, choices=["sample", "window", "live", "final"])
     build(ap.parse_args().phase)
