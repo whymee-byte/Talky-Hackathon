@@ -62,6 +62,7 @@ step "credit-note units (T16)" $PY -u -m src.cnrest --phase "$PHASE"
 step "credit-note runs (T21)" $PY -u -m src.cnfill --phase "$PHASE"
 step "late discount / FX orig (T21)" $PY -u -m src.fxlate --phase "$PHASE"
 step "last exception fixes (T15)" $PY -u -m src.excfix --phase "$PHASE"
+[[ -n "${NO_T3G:-}" ]] || step "overpayment shape (T3g)" $PY -u -m src.tolmatch --phase "$PHASE" --overfix
 if [[ "$PHASE" == "window" || "$PHASE" == "sample" ]]; then
   step "write + score" $PY -u -m src.submit --phase "$PHASE" --from "work/$PHASE/allocations.parquet" --score
 else
