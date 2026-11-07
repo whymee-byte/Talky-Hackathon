@@ -35,6 +35,22 @@ def main():
             p for p in ("train", "live", "final") if os.path.isdir(f"{RAW}/{p}")
         )
         learn.build(model, con, phases_for_notices=notices)
+    if a.phase != "window":
+        # The calibration used to be fitted only by the window run. A clean checkout that runs live/final directly had
+        # none, resolve.run silently skipped it and every downstream threshold (matcher 0.3, comb/T3g/unident 0.5,
+        # T14 0.2) saw the raw, much lower confidences: LIVE from scratch scored 2.2 points less. Fit it here, from the
+        # same independent pre-window predictions the window run uses (TRAIN only, no LIVE/FINAL labels exist).
+        from . import calibrate
+        if not os.path.exists(calibrate.CAL):
+            print(f"WARNING: {calibrate.CAL} missing -> fitting the T4 calibration from pre-window TRAIN predictions",
+                  flush=True)
+            if not os.path.exists("work/party_model/pre_window/learned_keys.parquet"):
+                learn.build("pre_window", con, phases_for_notices=("train",))
+            con.close()
+            resolve.run("learn", "pre_window", fuzzy=not a.no_fuzzy, apply_calibration=False)
+            calibrate.fit("work/learn/line_party.parquet")
+            con = connect()
+        print(f"T4 calibration: {calibrate.CAL}", flush=True)
     con.close()
     out = resolve.run(a.phase, model, fuzzy=not a.no_fuzzy)
     print(f"{out} en {time.time() - t0:.0f}s")
