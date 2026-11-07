@@ -76,8 +76,6 @@ def cached_result(out: str, key: str) -> dict | None:
 
 
 def build(phase: str, data: str | None = None) -> dict:
-    con = duckdb.connect()
-    con.sql("set preserve_insertion_order=false")
     out = os.path.join(REPO, "work", phase)
     os.makedirs(out, exist_ok=True)
     pdir = phase_dir(phase, data)
@@ -85,6 +83,8 @@ def build(phase: str, data: str | None = None) -> dict:
     hit = cached_result(out, signature)
     if hit is not None:
         return hit
+    con = duckdb.connect()
+    con.sql("set preserve_insertion_order=false")
     print(f"[base_parquet] building {phase}; input signature {signature[:12]}", flush=True)
 
     # ---------------------------------------------------------------- lines (§1)
@@ -198,6 +198,7 @@ def build(phase: str, data: str | None = None) -> dict:
     with open(os.path.join(out, ".base_parquet_manifest.json"), "w", encoding="utf-8") as fh:
         json.dump({"signature": signature, "phase": phase}, fh)
     print(f"[base_parquet] wrote items: {n_items[0]:,}", flush=True)
+    con.close()
     return {"lines": n_lines, "items": n_items}
 
 
