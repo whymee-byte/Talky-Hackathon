@@ -27,8 +27,9 @@ from src.common import REPO
 from src.match import combo
 
 PARTY_MIN = 0.5
-DUE_LO, DUE_HI = 90, 10   # days before / after the booking date (TRAIN window: 90 % of paid invoices within 5..77 overdue)
-MAX_CAND = 24
+# passes: (days before, days after, max candidates). The tight pass first; the wide pass only on what is still open.
+# TRAIN window: pass 1 ~150 receipts, pair precision 0.71-1.00; pass 2 adds ~100 more at set precision 0.62.
+PASSES = ((90, 10, 24), (180, 30, 32))
 
 
 def build(phase: str, alloc: str | None = None) -> None:
@@ -43,30 +44,35 @@ def build(phase: str, alloc: str | None = None) -> None:
         return
     con.execute("""CREATE TABLE USED AS SELECT item_id FROM A WHERE item_id IS NOT NULL GROUP BY 1
                    HAVING sum(CASE WHEN exception = 'RETURNED' THEN -1 ELSE 1 END) > 0""")
-    con.execute(f"""CREATE TABLE C AS
-      SELECT l.bank_txn_id, abs(l.amount_cents) cash, p.party_id, p.confidence, i.item_id, i.open_at_start_cents v
-      FROM '{w}/lines.parquet' l JOIN '{lp}' p USING (bank_txn_id)
-      JOIN '{w}/items.parquet' i
-        ON i.party_id = p.party_id AND i.currency = l.currency AND i.entity = l.entity AND i.kind = 'ARI'
-       AND i.open_at_start_cents > 0 AND i.issue_date <= l.booking_date
-       AND i.due_date BETWEEN l.booking_date - INTERVAL {DUE_LO} DAY AND l.booking_date + INTERVAL {DUE_HI} DAY
-      WHERE l.direction = 'IN' AND p.rank = 1 AND p.confidence >= {PARTY_MIN}
-        AND l.bank_txn_id IN (SELECT bank_txn_id FROM A GROUP BY 1 HAVING count(item_id) = 0)
-        AND i.item_id NOT IN (SELECT item_id FROM USED)""")
-    rows = con.execute(f"""SELECT bank_txn_id, any_value(cash), any_value(party_id), any_value(confidence), list(item_id), list(v)
-                           FROM C GROUP BY 1 HAVING count(*) BETWEEN 2 AND {MAX_CAND}""").fetchall()
     picks, taken = [], set()
-    for t, cash, party, conf, ids, vals in rows:
-        k, sol = combo.solve(list(vals), int(cash))
-        if k != 1 or not sol:
-            continue
-        items = [ids[j] for j in sol]
-        if any(i in taken for i in items):
-            continue
-        taken.update(items)
-        for j in sol:
-            picks.append((t, ids[j], int(vals[j]), round(float(conf) * (0.85 if len(sol) <= 5 else 0.65), 3),
-                          f"unique subset of {len(ids)} open invoices of party {party} due within -{DUE_LO}/+{DUE_HI} days; {len(sol)} items = cash"))
+    for DUE_LO, DUE_HI, MAX_CAND in PASSES:
+        con.execute("DROP TABLE IF EXISTS C")
+        con.execute(f"""CREATE TABLE C AS
+          SELECT l.bank_txn_id, abs(l.amount_cents) cash, p.party_id, p.confidence, i.item_id, i.open_at_start_cents v
+          FROM '{w}/lines.parquet' l JOIN '{lp}' p USING (bank_txn_id)
+          JOIN '{w}/items.parquet' i
+            ON i.party_id = p.party_id AND i.currency = l.currency AND i.entity = l.entity AND i.kind = 'ARI'
+           AND i.open_at_start_cents > 0 AND i.issue_date <= l.booking_date
+           AND i.due_date BETWEEN l.booking_date - INTERVAL {DUE_LO} DAY AND l.booking_date + INTERVAL {DUE_HI} DAY
+          WHERE l.direction = 'IN' AND p.rank = 1 AND p.confidence >= {PARTY_MIN}
+            AND l.bank_txn_id IN (SELECT bank_txn_id FROM A GROUP BY 1 HAVING count(item_id) = 0)
+            AND i.item_id NOT IN (SELECT item_id FROM USED)""")
+        done = {t for t, *_ in picks}
+        rows = con.execute(f"""SELECT bank_txn_id, any_value(cash), any_value(party_id), any_value(confidence), list(item_id), list(v)
+                               FROM C GROUP BY 1 HAVING count(*) BETWEEN 2 AND {MAX_CAND}""").fetchall()
+        for t, cash, party, conf, ids, vals in rows:
+            if t in done:
+                continue
+            k, sol = combo.solve(list(vals), int(cash))
+            if k != 1 or not sol:
+                continue
+            items = [ids[j] for j in sol]
+            if any(i in taken for i in items):
+                continue
+            taken.update(items)
+            for j in sol:
+                picks.append((t, ids[j], int(vals[j]), round(float(conf) * (0.85 if len(sol) <= 5 else 0.65) * (1.0 if DUE_LO <= 90 else 0.9), 3),
+                              f"unique subset of {len(ids)} open invoices of party {party} due within -{DUE_LO}/+{DUE_HI} days; {len(sol)} items = cash"))
     n = len({t for t, *_ in picks})
     if picks:
         pk = pd.DataFrame(picks, columns=["bank_txn_id", "item_id", "amount_cents", "confidence", "evidence"])  # noqa: F841
