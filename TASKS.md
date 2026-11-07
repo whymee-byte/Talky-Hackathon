@@ -48,7 +48,7 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
   `starter/score_train.py`; la nota LIVE queda apuntada en `SUBMISSIONS.md`.
 
 ### T1 · Base: movimientos, partidas y saldos de ventana
-- **Dueño:**
+- **Dueño: galileo**
 - **Salidas:** `work/<fase>/lines.parquet` (§1), `work/<fase>/items.parquet` (§2) para `sample`, `window`, `live`
   (y `final` cuando salga).
 - **Hecho cuando:** 1 fila por `bank_txn_id`; extrae `cp_name_norm`, `ibans`, `mandate_ids`, `batch_refs`, `doc_tokens`,
