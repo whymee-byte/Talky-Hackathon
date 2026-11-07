@@ -15,6 +15,7 @@ import argparse
 import os
 import time
 
+from src.common import safe_stdout
 from src.party.common import WINDOW_START, connect, out_dir, src
 
 PAT_MIN_N = 2        # a pattern seen fewer times falls back to the token model
@@ -138,6 +139,7 @@ def evaluate(con, phase, out, q1=False):
 
 
 def main():
+    safe_stdout()
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", required=True, choices=["sample", "window", "live", "final"])
     ap.add_argument("--q1", action="store_true", help="window only: lines of 2024-07..09 (dev loop)")
