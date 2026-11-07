@@ -299,11 +299,14 @@ def build(phase):
     cat = f"{w}/line_category.parquet"
     nonitem = (f"""SELECT l.bank_txn_id, NULL item_id, NULL::BIGINT amount_cents,
                          coalesce(c.category, CASE WHEN l.direction = 'IN' THEN 'UNIDENTIFIED' ELSE 'BANK_FEES' END) category,
-                         CASE WHEN coalesce(c.category, CASE WHEN l.direction = 'IN' THEN 'UNIDENTIFIED' END) = 'UNIDENTIFIED'
-                              THEN 'UNIDENTIFIED' ELSE '' END exception,
-                         CASE WHEN c.category IS NULL THEN 'T3.none.fallback' ELSE 'T7.category' END rule,
-                         coalesce(c.p_category, 0.3) confidence, 'no item found' evidence
-                  FROM L l LEFT JOIN '{cat}' c USING (bank_txn_id)""" if os.path.exists(cat) else
+                         CASE WHEN c.category = 'UNIDENTIFIED' THEN 'UNIDENTIFIED'
+                              WHEN c.category IS NULL AND l.direction = 'IN' AND coalesce(p.c, 0) < {UNIDENT_MAX_PARTY} THEN 'UNIDENTIFIED'
+                              ELSE '' END exception,
+                         CASE WHEN c.category IS NULL THEN 'T3.none.fallback' ELSE coalesce(c.rule, 'T7.category') END rule,
+                         coalesce(c.confidence, 0.3) confidence,
+                         coalesce(c.evidence, 'no item found; best party conf=' || round(coalesce(p.c, 0), 2)) evidence
+                  FROM L l LEFT JOIN '{cat}' c USING (bank_txn_id)
+                  LEFT JOIN (SELECT bank_txn_id, max(confidence) c FROM P GROUP BY 1) p USING (bank_txn_id)""" if os.path.exists(cat) else
                f"""SELECT l.bank_txn_id, NULL item_id, NULL::BIGINT amount_cents,
                          CASE WHEN l.direction = 'IN' THEN 'UNIDENTIFIED' ELSE 'BANK_FEES' END category,
                          CASE WHEN l.direction = 'IN' AND coalesce(p.c, 0) < {UNIDENT_MAX_PARTY} THEN 'UNIDENTIFIED' ELSE '' END exception,
