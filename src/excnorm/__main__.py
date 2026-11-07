@@ -62,6 +62,30 @@ def build(phase: str) -> None:
                          'SHORT_WITHHOLDING' exception, 'T5c.wht_add' rule, 0.7 confidence,
                          'unique party invoice; cash = total less a withholding rate' evidence FROM ADD""")
         n_add = con.execute("SELECT count(*) FROM ADD").fetchall()[0][0]
+    # prefix_add: receipt with no item, likely party (rank 1, T4 >= 0.5): its oldest unused open items (credit notes
+    # negative) in the instructed currency add up exactly to the instructed amount -> those items (window 2151 pairs,
+    # 87 % precision). The customer clears its oldest invoices; exact cents make the cut point unambiguous.
+    if os.path.exists(lp):
+        con.execute(f"""CREATE TABLE PF AS
+          WITH ln AS (SELECT l.bank_txn_id, l.booking_date bd, p.party_id, l.currency lcur,
+                             coalesce(l.orig_currency, l.currency) cur, coalesce(abs(l.orig_amount_cents), abs(l.amount_cents)) amt
+                      FROM '{w}/lines.parquet' l JOIN '{lp}' p USING (bank_txn_id)
+                      WHERE l.direction = 'IN' AND p.rank = 1 AND p.confidence >= 0.5
+                        AND l.bank_txn_id IN (SELECT bank_txn_id FROM A GROUP BY 1 HAVING count(item_id) = 0)),
+               pf AS (SELECT ln.bank_txn_id, ln.lcur, i.item_id, i.kind, i.currency, i.issue_date, i.open_at_start_cents open_c, ln.amt,
+                             sum(CASE WHEN i.kind = 'ARC' THEN -i.open_at_start_cents ELSE i.open_at_start_cents END)
+                                 OVER (PARTITION BY ln.bank_txn_id ORDER BY i.issue_date, i.item_id) cum
+                      FROM ln JOIN '{w}/items.parquet' i ON i.party_id = ln.party_id AND i.currency = ln.cur AND i.kind IN ('ARI', 'ARC')
+                           AND i.open_at_start_cents > 0 AND i.issue_date <= ln.bd AND i.issue_date >= ln.bd - INTERVAL 400 DAY
+                      WHERE i.item_id NOT IN (SELECT item_id FROM A WHERE item_id IS NOT NULL)),
+               cut AS (SELECT bank_txn_id, min(issue_date) FILTER (WHERE abs(cum - amt) <= 1) d FROM pf GROUP BY 1)
+          SELECT pf.* FROM pf JOIN cut USING (bank_txn_id) WHERE cut.d IS NOT NULL AND pf.issue_date <= cut.d
+          QUALIFY row_number() OVER (PARTITION BY item_id ORDER BY bank_txn_id) = 1""")
+        con.execute("DELETE FROM A WHERE item_id IS NULL AND bank_txn_id IN (SELECT bank_txn_id FROM PF)")
+        con.execute("""INSERT INTO A BY NAME SELECT bank_txn_id, item_id, open_c amount_cents, NULL::VARCHAR category,
+                         CASE WHEN kind = 'ARI' AND currency <> lcur THEN 'FX_DIFFERENCE' ELSE '' END exception,
+                         'T5c.prefix_add' rule, 0.6 confidence, 'oldest open items of the party sum exactly to the amount' evidence FROM PF""")
+        print("prefix_add:", con.execute("SELECT count(DISTINCT bank_txn_id), count(*) FROM PF").fetchall())
     print(f"[{phase}] excnorm:", con.sql("SELECT exc, count(*) FROM FIX GROUP BY 1").fetchall(), "wht_add", n_add)
     con.execute(f"COPY A TO '{p}' (FORMAT parquet)")
 
