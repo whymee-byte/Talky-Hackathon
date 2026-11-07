@@ -19,7 +19,7 @@ import time
 
 import duckdb
 
-from src.common import REPO, safe_stdout
+from src.common import REPO, data_root, safe_stdout
 
 PARTY_MIN = 0.2
 
@@ -115,8 +115,9 @@ def build(phase: str) -> None:
                    FROM B1 b JOIN IO i USING (item_id) WHERE (b.how <> 'typo' OR b.pok) AND b.item_id NOT IN (SELECT item_id FROM OUTR)""")
     # stage D (POLICIES §3 SHORT_BANK_CHARGES): a single open invoice of a likely party (T4 >= 0.5), same currency,
     # cash short by <= 60 EUR equivalent and <= 2 % (intermediary bank fee), unique for the line
-    con.execute("""CREATE TABLE FXR AS SELECT date::DATE d, currency, units_per_eur::DOUBLE u
-                   FROM read_csv('data/bankrec-docs-and-masters/masters/fx_rates.csv', all_varchar=true)""")
+    fxp = os.path.join(data_root(), "masters", "fx_rates.csv").replace(os.sep, "/")
+    con.execute(f"""CREATE TABLE FXR AS SELECT date::DATE d, currency, units_per_eur::DOUBLE u
+                   FROM read_csv('{fxp}', all_varchar=true)""")
     con.execute("""CREATE TABLE BC AS
       WITH l AS (SELECT l.*, coalesce(f.u, 1.0) u FROM LT l ASOF LEFT JOIN FXR f ON f.currency = l.currency AND f.d <= l.booking_date
                  WHERE l.bank_txn_id NOT IN (SELECT bank_txn_id FROM OUTR)),
