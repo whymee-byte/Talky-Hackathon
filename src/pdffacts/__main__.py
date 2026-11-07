@@ -117,6 +117,9 @@ def facts_of(doc_type: str, text: str) -> list[tuple]:
     return out
 
 
+PRIOR_PHASES = {"live": ("train",), "final": ("train", "live")}   # earlier PDF caches for items open at start
+
+
 def build(phase: str) -> dict:
     cache_phase = "train" if phase == "window" else phase
     src = os.path.join(REPO, "data_cache", cache_phase, "pdf_text.parquet").replace(os.sep, "/")
@@ -124,16 +127,26 @@ def build(phase: str) -> dict:
         raise FileNotFoundError(f"{src} missing: run python -m src.pdffacts.extract --phase {cache_phase}")
     con = duckdb.connect()
     docs = con.sql(f"select file, document_type, document_number, entity, party_id, document_date, text from '{src}'").fetchall()
+    # invoices open at the start of the phase were issued (and their PDF shipped) in an earlier phase: read those caches
+    # too, keeping only facts that resolve to an item of this phase (below)
+    prior = []
+    for pp in PRIOR_PHASES.get(phase, ()):
+        ps = os.path.join(REPO, "data_cache", pp, "pdf_text.parquet").replace(os.sep, "/")
+        if os.path.exists(ps):
+            prior += con.sql(f"""select file, document_type, document_number, entity, party_id, document_date, text
+                                from '{ps}' where document_type in ('invoice', 'credit_note', 'supplier_invoice',
+                                'supplier_credit_note')""").fetchall()
     rows = []
     unknown = 0
-    for f, dt, dn, ent, pid, dd, txt in docs:      # one regex pass per document (≤ 35k docs per phase)
-        fs = facts_of(dt, txt)
-        if not fs and dt in ("bank_account_notice",):
-            unknown += 1
-        for fact, lang, vn, vt, vf, ev in fs:
-            rows.append((f, dt, ent, pid, dn, fact, vn, vt, vf, f"T8.{fact.lower()}.{lang}", ev))
+    for own, batch in ((True, docs), (False, prior)):
+        for f, dt, dn, ent, pid, dd, txt in batch:      # one regex pass per document
+            fs = facts_of(dt, txt)
+            if own and not fs and dt in ("bank_account_notice",):
+                unknown += 1
+            for fact, lang, vn, vt, vf, ev in fs:
+                rows.append((f, dt, ent, pid, dn, fact, vn, vt, vf, f"T8.{fact.lower()}.{lang}", ev, own))
     import pyarrow as pa
-    cols = ["pdf_file", "document_type", "entity", "party_id", "doc_number", "fact", "value_num", "value_text", "valid_from", "rule", "evidence"]
+    cols = ["pdf_file", "document_type", "entity", "party_id", "doc_number", "fact", "value_num", "value_text", "valid_from", "rule", "evidence", "own"]
     tb = pa.table({c: [r[i] for r in rows] for i, c in enumerate(cols)}) if rows else pa.table({c: [] for c in cols})
     con.register("f", tb)
     work = os.path.join(REPO, "work", phase).replace(os.sep, "/")
@@ -145,7 +158,9 @@ def build(phase: str) -> dict:
       from f left join (select item_id, entity, party_id, doc_norm from '{work}/items.parquet') i
         on i.entity = f.entity and i.party_id = f.party_id
        and i.doc_norm = trim(regexp_replace(strip_accents(upper(f.doc_number)), '[^A-Z0-9]+', ' ', 'g'))
-       and f.document_type in ('invoice', 'credit_note', 'supplier_invoice', 'supplier_credit_note')""")
+       and f.document_type in ('invoice', 'credit_note', 'supplier_invoice', 'supplier_credit_note')
+      where f.own or i.item_id is not null
+      qualify f.own or count(*) filter (where f.own) over (partition by i.item_id, f.fact) = 0""")
     con.sql(f"copy facts to '{work}/doc_facts.parquet' (format parquet)")
     stats = con.sql("select fact, count(*), count(item_id) from facts group by 1 order by 1").fetchall()
     return {"docs": len(docs), "facts": stats, "notices_without_fact": unknown}
