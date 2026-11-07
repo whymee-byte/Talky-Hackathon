@@ -111,7 +111,8 @@ tolpost sigue sumando (+0,06) sobre el excfix nuevo; todo consistente fuera de m
 ## 11. Estado al cierre (FINAL enviado 18:40: main 9cb8800 → 94,22)
 Esta rama (javier/t3u-on-94) está rebasada sobre el main final (ef14c90) y NO entró en FINAL. Aporta, en orden de
 valor: `src.tolpost` tras excfix (overfix + T3u + T3g.ambig) > `src.pocomb` > `src.delaycomb` (ambos antes de cnmore),
-todo validado fuera de muestra (Q1 → Q2-Q4) y sin red. Medida de la ventana completa sobre el main final: ver abajo.
+todo validado fuera de muestra (Q1 → Q2-Q4) y sin red. Medida de la ventana completa sobre el main final (ef14c90, ventana main solo 94,14): **94,24 (+0,10)**
+(F1 95,21 · acc 94,68 · macro-F1 91,15). Log: logs/window_mainfinal.log.
 Para FINAL habría sido lo mismo que LIVE: pasos deterministas al final del pipeline, reglas generales aprendidas de
 TRAIN (retraso por cliente, pedidos completos, forma del sobrepago, tabla de no identificados), sin ids ni importes
 a fuego.
