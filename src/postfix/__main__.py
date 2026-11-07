@@ -45,6 +45,20 @@ def build(phase: str) -> None:
                     HAVING sum(CASE WHEN i.kind = 'ARC' THEN -a.amount_cents ELSE a.amount_cents END) < abs(l.amount_cents) - greatest(100, 0.005 * abs(l.amount_cents))))
             AND c.item_id NOT IN (SELECT item_id FROM A WHERE item_id IS NOT NULL)
           QUALIFY row_number() OVER (PARTITION BY c.item_id ORDER BY c.bank_txn_id) = 1""")
+        # fill_weak: still no item, few truncated/typo candidates whose open amounts do not exceed the cash
+        # (window precision 74-86 %, above the F1/2 break-even)
+        con.execute(f"""INSERT INTO FILL
+          WITH c AS (SELECT c.*, abs(l.amount_cents) cash FROM '{cands}' c JOIN '{w}/lines.parquet' l USING (bank_txn_id)
+                     WHERE c.bank_txn_id IN (SELECT bank_txn_id FROM A GROUP BY 1 HAVING count(item_id) = 0)
+                       AND c.bank_txn_id NOT IN (SELECT bank_txn_id FROM FILL)
+                       AND c.item_id NOT IN (SELECT item_id FROM A WHERE item_id IS NOT NULL)),
+               s AS (SELECT bank_txn_id, count(*) nc, sum(CASE WHEN kind = 'ARC' THEN -open_c ELSE open_c END) sm, any_value(cash) cash
+                     FROM c GROUP BY 1)
+          SELECT c.bank_txn_id, c.item_id, c.open_c, NULL, '', 'T5b.fill_weak.' || replace(c.how, '+', '_'), 0.6,
+                 'no item after T3; ' || s.nc || ' noisy candidates summing ' || s.sm || ' for cash ' || s.cash
+          FROM c JOIN s USING (bank_txn_id)
+          WHERE (s.nc <= 30 AND s.sm <= 1.05 * s.cash) OR (s.nc <= 3 AND s.sm <= 1.5 * s.cash)
+          QUALIFY row_number() OVER (PARTITION BY c.item_id ORDER BY c.bank_txn_id) = 1""")
         con.execute("DELETE FROM A WHERE item_id IS NULL AND bank_txn_id IN (SELECT bank_txn_id FROM FILL)")
         con.execute("INSERT INTO A BY NAME SELECT * FROM FILL")
         print("fill_ref:", con.sql("SELECT count(DISTINCT bank_txn_id), count(*) FROM FILL").fetchall())
