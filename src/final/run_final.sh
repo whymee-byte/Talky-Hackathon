@@ -96,7 +96,10 @@ step() {
     FAILED_OPT+=("$name")
   fi
 }
-have() { [[ -f "src/$1/__main__.py" ]]; }
+have() {
+  local module=$1 path="src/${module//.//}"
+  [[ -f "$path/__main__.py" || -f "$path.py" ]]
+}
 
 # ---------- pipeline ----------
 # Score-critical stages are required when their module exists. A missing module
@@ -109,6 +112,18 @@ run_stage() {
     say "AVISO: módulo ausente src/$module; continúo con fallback determinista"
     FAILED_OPT+=("$name:module-missing")
   fi
+}
+
+# PDF extraction is the one stage whose input is legitimately optional.  A
+# cached extraction is enough; otherwise run it only when this phase actually
+# supplies PDF/document directories or an index.  Once inputs exist, failure is
+# fatal just like every other score-critical stage.
+EXPH=$([[ "$PHASE" == window ]] && echo train || echo "$PHASE")
+PDF_CACHE="data_cache/$EXPH/pdf_text.parquet"
+pdf_inputs_present() {
+  local root=${HK_DATA:?}
+  [[ -d "$root/$EXPH/pdfs" || -d "$root/$EXPH/remittance_advices" || \
+     -f "$root/$EXPH/pdfs/index.csv" || -f "$root/$EXPH/remittance_advices/index.csv" ]]
 }
 
 step T1_base_parquet req "$PY" -u -m src.base_parquet --phase "$PHASE" --data "$HK_DATA"
@@ -126,6 +141,19 @@ run_stage nonitem T7_nonitem
 run_stage match T3_match
 run_stage exceptions T5_exceptions --data "$HK_DATA"
 run_stage postfix T5b_postfix
+
+if [[ -f "$PDF_CACHE" ]]; then
+  say "pdf text: caché existente $PDF_CACHE"
+elif pdf_inputs_present && have pdffacts.extract; then
+  step T8_pdf_text req "$PY" -u -m src.pdffacts.extract --phase "$EXPH" --data "$HK_DATA"
+else
+  say "AVISO: sin entradas PDF/documentales para $EXPH; continúo sin extracción de texto"
+fi
+run_stage pdffacts T8_pdf_facts
+run_stage docrules T8b_pdf_clauses
+run_stage excnorm T5c_exception_norm
+run_stage multiref T5d_multiref
+run_stage unident T7b_unidentified
 
 SHA=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo nogit)
 OUT="out/${PHASE}_$(date +%Y%m%d-%H%M)_${SHA}.csv.gz"
