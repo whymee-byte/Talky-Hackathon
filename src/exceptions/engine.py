@@ -84,6 +84,7 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
              WHEN upper(l.orig_currency)=upper(coalesce(i.currency,p.item_currency)) AND l.orig_amount_cents IS NOT NULL
                THEN abs(l.orig_amount_cents)::DOUBLE
              ELSE abs(p.line_amount_cents)::DOUBLE / NULLIF(fr.u,0) * fi.u END cash_i,
+        abs(p.cash_cents)::DOUBLE applied_i,
         coalesce(p.doc_hint,'') AS hint
       FROM p JOIN l USING (bank_txn_id) JOIN i USING (item_id)
       LEFT JOIN cu ON cu.customer_id=i.party_id
@@ -173,10 +174,10 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
          ELSE exception_code END final_exception,
        CASE WHEN exception_code='DUPLICATE_PAYMENT' THEN abs(cash_i)
             WHEN exception_code='RETURNED' THEN abs(cash_i)
-            WHEN exception_code IN ('SHORT_DISPUTE','PARTIAL') AND n_pair=1 THEN abs(cash_i)
+            WHEN exception_code IN ('SHORT_DISPUTE','PARTIAL') AND n_pair=1 THEN coalesce(applied_i,abs(cash_i))
             WHEN exception_code='PARTIAL' AND n_pair>1 AND kind IN ('ARI','API') AND
               absorber_rank=1
-              THEN greatest(0,open_c-(abs(signed_open_sum)-abs(line_cash_i)))
+              THEN coalesce(applied_i,greatest(0,open_c-(abs(signed_open_sum)-abs(line_cash_i))))
             WHEN exception_code IN ('OVERPAYMENT','SHORT_DISCOUNT','SHORT_BANK_CHARGES','SHORT_WITHHOLDING','FX_DIFFERENCE') THEN open_c
             WHEN exception_code='PARTIAL' AND n_pair>1 THEN open_c
             ELSE open_c END final_amount
