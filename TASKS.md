@@ -61,7 +61,7 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
   apuntan a partidas con saldo > 0; LIVE en < 2 min.
 
 ### T2 · Ficheros de detalle
-- **Dueño:**
+- **Dueño:** ouyang
 - **Salida:** `work/<fase>/side_links.parquet` (§3).
 - **Hecho cuando:** enlaza cada movimiento de lote con todas sus partidas: remesa SEPA/BACS/ACH por `batch_id`,
   devoluciones por mandato + remesa (`RETURNED`), tarjeta por comercio/fecha/neto (importe **bruto** por pedido),

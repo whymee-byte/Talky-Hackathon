@@ -58,11 +58,28 @@ def load_items(phase: str, data: str | None):
     return totals, by_number
 
 
-def trivial_rows(phase: str, data: str | None):
-    """Yield (bank_txn_id, item_id, amount_text, category, exception, rule) for every line of the phase."""
+def load_side_links(path: str) -> dict:
+    """bank_txn_id -> [(item_id, amount_cents, exception, rule)] from side_links.parquet (§3)."""
+    import duckdb
+    out = defaultdict(list)
+    for t, i, a, e, r in duckdb.sql(f"select bank_txn_id, item_id, amount_cents, coalesce(exception, ''), rule "
+                                    f"from '{path.replace(os.sep, '/')}'").fetchall():
+        out[t].append((i, a, e, r))
+    return out
+
+
+def trivial_rows(phase: str, data: str | None, side: dict | None = None):
+    """Yield (bank_txn_id, item_id, amount_text, category, exception, rule) for every line of the phase.
+
+    Lines present in `side` (side_links) take those rows first; the rest get the trivial baseline."""
+    side = side or {}
     totals, by_number = load_items(phase, data)
-    used = set()
+    used = {i for rows in side.values() for i, *_ in rows}
     for t in iter_lines(phase, data):
+        if t["bank_txn_id"] in side:
+            for i, a, e, r in side[t["bank_txn_id"]]:
+                yield t["bank_txn_id"], i, cents_to_text(a), "", e, r
+            continue
         amt = cents(t["amount"])
         text = " ".join([t["text"], t["ref1"], t["ref2"], t["remittance_info"]]).upper()
         hit = None
@@ -129,6 +146,8 @@ def main(argv=None) -> int:
     ap.add_argument("--data", help="data root (folder with masters/)")
     ap.add_argument("--from", dest="src", help="allocations.parquet to serialise (default: work/<phase>/allocations.parquet if it exists)")
     ap.add_argument("--trivial", action="store_true", help="ignore allocations.parquet and write the trivial baseline")
+    ap.add_argument("--side-links", dest="side", help="side_links.parquet to put ahead of the baseline "
+                    "(default: work/<phase>/side_links.parquet if it exists; 'none' to disable)")
     ap.add_argument("--out", help="output file (default out/<phase>_<timestamp>_<sha>.csv.gz)")
     ap.add_argument("--score", action="store_true", help="also run tools/score.py (sample/train/window)")
     a = ap.parse_args(argv)
@@ -137,8 +156,11 @@ def main(argv=None) -> int:
     use_alloc = not a.trivial and os.path.exists(src)
     out = a.out or default_out(a.phase)
     t0 = time.time()
-    stats = write_submission(allocation_rows(src) if use_alloc else trivial_rows(a.phase, a.data), out)
-    print(f"{'allocations ' + src if use_alloc else 'trivial baseline'} -> {out}")
+    side_p = a.side or os.path.join(REPO, "work", a.phase, "side_links.parquet")
+    side = load_side_links(side_p) if (not use_alloc and side_p != "none" and os.path.exists(side_p)) else None
+    stats = write_submission(allocation_rows(src) if use_alloc else trivial_rows(a.phase, a.data, side), out)
+    mode = "allocations " + src if use_alloc else ("side_links + trivial baseline" if side else "trivial baseline")
+    print(f"{mode} -> {out}")
     print(f"  {stats['rows']} rows, {stats['pairs']} pairs, rules {stats['rules']}  ({time.time() - t0:.1f}s)")
 
     sys.path.insert(0, os.path.join(REPO, "tools"))

@@ -8,3 +8,4 @@ FINAL: un único envío válido.
 | # | Fecha y hora | Fase | Commit | Fichero | Hipótesis (qué cambia y por qué) | Ventana local | LIVE esperado | LIVE real | Estado | Confirmado por |
 |---|---|---|---|---|---|---|---|---|---|---|
 | 1 | 2026-11-07 11:19 | LIVE | fb9197d | `live_20261107-1111_fb9197d.csv.gz` (sub `s_a13bdd1907376b352f85`) | Envío válido trivial (T0): pares exactos del starter + resto `UNIDENTIFIED`/`BANK_FEES`. Prueba el circuito. `sample`: 11,28 (= starter). | — (sin `train/` en local) | 10–19 | **11,47** (F1 8,42 · P 99,31 · R 4,39 · macro-F1 0,88) | scored | — |
+| 2 | 2026-11-07 11:35 | LIVE | T2 paso 1 | `live_20261107-1134_e16d586.csv.gz` (sub `s_726a6aca835213dfa7aa`) | T2 paso 1: remesas SEPA/BECS/BACS/ACH por `batch_id` → todos sus recibos (side_links por delante del baseline T0). `ar_dd_batch` ventana P 99,79 % / R 99,79 %. | 11,38 → **21,91** (+10,53) | ~21 | **21,75** (F1 28,63 · P 99,61 · R 16,72 · acc 24,18) | scored | — |
