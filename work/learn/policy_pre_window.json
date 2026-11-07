@@ -1,0 +1,21 @@
+{
+ "model": "pre_window",
+ "withholding": {
+  "entities": [
+   "BR01",
+   "ES01",
+   "MA01",
+   "MX01"
+  ],
+  "countries": [
+   "BR",
+   "MA",
+   "MX"
+  ],
+  "rates": [
+   0.0125,
+   0.015,
+   0.1
+  ]
+ }
+}

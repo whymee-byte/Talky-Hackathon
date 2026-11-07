@@ -173,6 +173,7 @@ run_stage duefill T20_duefill
 run_stage tolmatch T3g_tolmatch
 run_stage pocomb T22_pocomb
 run_stage delaycomb T21b_delaycomb
+run_stage agecomb T24_agecomb
 run_stage cnmore T19_cnmore
 opt_stage() { local module=$1 name=$2; shift 2; have "$module" && step "$name" opt "$PY" -u -m "src.$module" --phase "$PHASE" "$@"; true; }
 opt_stage refgap T16_refgap
@@ -180,7 +181,10 @@ opt_stage cnrest T16_cnrest
 opt_stage cnfill T21_cnfill
 opt_stage fxlate T21_fxlate
 run_stage excfix T15_excfix
-[[ -n "${NO_T3G:-}${NO_OVERFIX:-}" ]] || run_stage tolpost T3g_post_overfix_unid   # overfix + T3u (NO_T3G/NO_OVERFIX apagan)
+[[ -n "${NO_T3G:-}${NO_OVERFIX:-}" ]] || run_stage tolmatch T3g_overfix --overfix
+run_stage lastexact T22_lastexact
+run_stage duecomb T23_duecomb
+run_stage latedisc T20_latedisc
 
 SHA=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo nogit)
 OUT="out/${PHASE}_$(date +%Y%m%d-%H%M)_${SHA}.csv.gz"

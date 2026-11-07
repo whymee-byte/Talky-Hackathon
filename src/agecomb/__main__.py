@@ -1,4 +1,4 @@
-"""T23 · receipts still without item: stale invoices are not candidates -> unique exact subset of the party's LIVE invoices.
+"""T24 · receipts still without item: stale invoices are not candidates -> unique exact subset of the party's LIVE invoices.
 
     python -m src.agecomb --phase window|live|final [--eval]
 
@@ -28,7 +28,7 @@ MAX_CAND = int(os.environ.get("AC_MAX_CAND", 18))
 MIN_CAND = 2
 PASSES = int(os.environ.get("AC_PASSES", 2))
 PARTY_MIN = 0.5
-RULE = "T23.agecomb"
+RULE = "T24.agecomb"
 
 
 SOL_CAP = int(os.environ.get("AC_SOL_CAP", 64))     # solutions enumerated per line (marginal mode)
@@ -184,7 +184,7 @@ def build(phase, do_eval=False, learn_model=False):
              || abs(n.n_cand) || ' cand, ' || n.n_sol || ' solutions) = cash' evidence
       FROM NEW n JOIN IT i USING (item_id)
     ) TO '{w}/allocations.parquet' (FORMAT parquet)""")
-    print(f"[{phase}] T23 agecomb: {len({b for b, _, _, _ in total})} lines, {len(total)} pairs ({time.time() - t0:.0f}s)")
+    print(f"[{phase}] T24 agecomb: {len({b for b, _, _, _ in total})} lines, {len(total)} pairs ({time.time() - t0:.0f}s)")
     if do_eval and os.path.exists("data_cache/train/golden_allocations.parquet"):
         r = con.execute("""
           WITH g AS (SELECT bank_txn_id, item_id FROM 'data_cache/train/golden_allocations.parquet' WHERE item_id IS NOT NULL),

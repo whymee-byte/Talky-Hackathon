@@ -1,0 +1,84 @@
+FINALfinal_20261107-1838_7a18058.csv.gzPuntuado
+
+Puntuación
+
+94.22
+
+/ 100
+Allocation F1peso 50 %95,5 %
+Precisión98,5 %
+Recall92,8 %
+Transaction accuracypeso 30 %95,0 %
+Exception macro-F1peso 20 %89,7 %
+Exactitud ponderada por importe93,5 %
+Recuentos
+
+Movimientos de la fase
+    220.256
+Filas del envío
+    790.160
+Movimientos sin respuesta
+    0
+
+Por segmento
+Segmento	Movimientos	Exactitud
+ar_ref_noise	~47.000	94,9 %
+ap_payment_multi	~28.000	100,0 %
+ar_1to1	~22.000	99,3 %
+ap_payment_single	~19.000	99,9 %
+ar_short_discount	~7200	95,6 %
+ar_1toN_text	~6500	94,9 %
+ar_same_amount_fifo	~6500	92,7 %
+nonitem_bank_fees	~6500	100,0 %
+ap_direct_debit	~6100	100,0 %
+ar_instalment	~4700	88,0 %
+ar_same_amount_month	~4400	95,3 %
+ar_partial	~4300	89,4 %
+ar_dd_returned	~3800	94,1 %
+ap_paid_by_holding	~3700	100,0 %
+ar_1toN_credit_note	~3500	70,2 %
+nonitem_bank_fees_intl	~3500	100,0 %
+ap_credit_note_netted	~2900	100,0 %
+ap_supplier_refund	~2900	94,9 %
+ap_partial	~2800	99,8 %
+ar_cheque_deposit	~2000	98,6 %
+ar_n_to_m	~1800	21,2 %
+ap_factored	~1600	96,5 %
+ar_dd_batch	~1600	94,7 %
+nonitem_cash_pool	~1600	100,0 %
+ar_short_withholding	~1400	82,2 %
+ap_fx	~1300	98,5 %
+ar_card_settlement	~1300	100,0 %
+ar_1toN_remittance	~1200	99,4 %
+ar_dispute_settlement	~1200	93,9 %
+ar_dd_represented_transfer	~1100	94,6 %
+ar_short_dispute	~1100	73,1 %
+ar_retention	~930	83,3 %
+ar_discount_late	~890	72,2 %
+ar_fx	~800	74,0 %
+ap_confirming	~770	94,4 %
+ar_retention_release	~760	98,0 %
+ar_third_party_confirming	~750	99,1 %
+ar_duplicate_payment	~660	86,0 %
+nonitem_intercompany	~470	99,6 %
+ar_overpayment	~440	84,6 %
+ar_third_party_agency	~410	91,7 %
+nonitem_bank_reversal	~410	100,0 %
+customer_refund	~360	99,2 %
+customer_advance	~350	88,5 %
+ar_advance_deduction	~340	69,1 %
+ar_new_iban	~330	96,6 %
+ar_replaced_invoice	~320	79,6 %
+nonitem_fx_deal	~200	99,0 %
+ar_third_party_parent	~190	92,1 %
+ap_returned_transfer	~180	96,6 %
+ar_short_bank_charges	~160	81,6 %
+nonitem_card_expenses	~99	100,0 %
+ar_cheque_returned	~80	93,8 %
+ap_duplicate_payment	~72	66,7 %
+ap_duplicate_refund	~69	75,4 %
+ar_card_chargeback	~49	79,6 %
+ar_credit_note_paid_out	~42	88,1 %
+nonitem_interest_expense	~31	100,0 %
+nonitem_insurance	~28	100,0 %
+ar_1to1_remittance	~2	100,0 %

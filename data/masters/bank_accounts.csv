@@ -22,6 +22,7 @@ FR01-LORV-EUR,FR01,LORV,Banque Lorvalle,LORVFRPPXXX,EUR,FR2394041094243028494087
 FR01-LORV-EUR-2,FR01,LORV,Banque Lorvalle,LORVFRPPXXX,EUR,FR7594041449078808583341939,,Cobros / Pagos,mt940,,
 FR01-RHEI-EUR,FR01,RHEI,Rheinfeld Kreditbank,RHEIDEFFXXX,EUR,DE47945729317266159917,,Operativa / participante cash pool / Cobros,camt053,,
 IT01-VALD-EUR,IT01,VALD,Banca Valdorsa,VALDITMMXXX,EUR,IT65A9490412092202447753907,,Cobros / Pagos / Remesas SEPA (adeudos directos) / Nóminas,mt940,,
+IT01-VALD-EUR-2,IT01,VALD,Banca Valdorsa,VALDITMMXXX,EUR,IT85L9468148028577478027574,,Pagos,mt940,,2026-02-01
 IT01-RHEI-EUR,IT01,RHEI,Rheinfeld Kreditbank,RHEIDEFFXXX,EUR,DE86947853019130193792,,Operativa / participante cash pool,camt053,,
 DE01-RHEI-EUR,DE01,RHEI,Rheinfeld Kreditbank,RHEIDEFFXXX,EUR,DE17942741585670999198,,Operativa / participante cash pool / Cobros / Pagos / Remesas SEPA (adeudos directos) / Nóminas,camt053,,
 NL01-RHEI-EUR,NL01,RHEI,Rheinfeld Kreditbank,RHEIDEFFXXX,EUR,NL59ZZTJ4902011797,,Operativa / participante cash pool / Cobros / Pagos / Remesas SEPA (adeudos directos) / Nóminas,camt053,,
@@ -46,3 +47,5 @@ CN01-LING-USD,CN01,LING,Lingnan Harbour Bank,LINGCNSHXXX,USD,,3848327169,Cobros 
 AU01-WATT-AUD,AU01,WATT,Southern Wattle Bank,WATTAU2SXXX,AUD,,4481846404,Cobros / Pagos / Liquidación TPV / comercio electrónico / Remesas SEPA (adeudos directos) / Nóminas,camt053,,
 AU01-WATT-AUD-2,AU01,WATT,Southern Wattle Bank,WATTAU2SXXX,AUD,,9794151824,Cobros,camt053,,
 AU01-WATT-USD,AU01,WATT,Southern Wattle Bank,WATTAU2SXXX,USD,,7220249842,Pagos,camt053,,
+ZA01-UMVC-ZAR,ZA01,UMVC,Umvoti Crest Bank,UMVCZAJJXXX,ZAR,,2633708284,Cobros / Pagos / Nóminas,mt940,,2026-01-01
+ZA01-UMVC-USD,ZA01,UMVC,Umvoti Crest Bank,UMVCZAJJXXX,USD,,8623700769,Cobros / Pagos,mt940,,2026-01-01

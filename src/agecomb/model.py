@@ -1,4 +1,4 @@
-"""T23.model · learned pair model for receipts still without item (after the exact-sum stages).
+"""T24.model · learned pair model for receipts still without item (after the exact-sum stages).
 
     python -m src.agecomb.model learn      # fit the weights on the window (TRAIN 2024-07 -> 2025-06) -> weights.npy
     (used by python -m src.agecomb --phase ... when weights.npy exists)
