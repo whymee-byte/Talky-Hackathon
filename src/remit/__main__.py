@@ -22,7 +22,7 @@ import time
 
 import duckdb
 
-from src.common import REPO, phase_dir
+from src.common import REPO, phase_dir, safe_stdout
 from src.remit import parse
 
 SOURCES = {"sample": ["sample"], "window": ["train"], "train": ["train"], "live": ["train", "live"],
@@ -185,6 +185,7 @@ def build(phase: str) -> None:
 
 
 def main():
+    safe_stdout()
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", required=True, choices=["sample", "window", "live", "final"])
     build(ap.parse_args().phase)
