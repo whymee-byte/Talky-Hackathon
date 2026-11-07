@@ -12,6 +12,8 @@ export PYTHONDONTWRITEBYTECODE=1
 step() { local t=$SECONDS; echo "== $PHASE: $1"; shift; "$@"; echo "   ($((SECONDS - t)) s)"; }
 step "base tables"      $PY -u -m src.base_parquet --phase "$PHASE"
 step "side files"       $PY -u -m src.sidefiles    --phase "$PHASE"
+step "side files AP"    $PY -u -m src.sidefiles_ap --phase "$PHASE"
+step "merge side links" $PY -u -m src.sidemerge  --phase "$PHASE"
 [[ -n "${NO_REMIT:-}" ]] || step "remittances" $PY -u -m src.remit --phase "$PHASE"
 step "party"            $PY -u -m src.party        --phase "$PHASE"
 [[ -n "${NO_FUZZ:-}" ]] || step "fuzzy refs" $PY -u -m src.fuzzref --phase "$PHASE"

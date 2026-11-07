@@ -41,12 +41,14 @@ def build(phase: str) -> None:
                     FROM '{w}/items.parquet'
                     WHERE side = 'AR' AND kind IN ('ARI', 'ARC') AND open_at_start_cents > 0
                       AND item_id NOT IN (SELECT item_id FROM SL0) AND length(doc_digits) >= 6""")
-    con.execute("""CREATE TABLE TK AS
+    con.execute("""CREATE TABLE TK AS   -- digits of 1-3 adjacent tokens ("INV23 0211203" -> 230211203)
       WITH t AS (SELECT bank_txn_id, string_split(text_norm, ' ') tok FROM LT),
-           g AS (SELECT bank_txn_id, tok[i] || CASE WHEN k = 2 AND i < len(tok) THEN tok[i + 1] ELSE '' END x
-                 FROM t, LATERAL (SELECT unnest(range(1, least(len(tok), 60) + 1)) i), LATERAL (SELECT unnest([1, 2]) k))
-      SELECT DISTINCT bank_txn_id, ltrim(x, '0') d FROM g
-      WHERE regexp_matches(x, '^[0-9]+$') AND length(ltrim(x, '0')) BETWEEN 6 AND 14""")
+           g AS (SELECT bank_txn_id, array_to_string(tok[i:i + k - 1], '') x
+                 FROM t, LATERAL (SELECT unnest(range(1, least(len(tok), 60) + 1)) i), LATERAL (SELECT unnest([1, 2, 3]) k)
+                 WHERE i + k - 1 <= len(tok) AND regexp_matches(tok[i], '[0-9]'))
+      SELECT DISTINCT bank_txn_id, ltrim(regexp_replace(x, '[^0-9]', '', 'g'), '0') d FROM g
+      WHERE length(ltrim(regexp_replace(x, '[^0-9]', '', 'g'), '0')) BETWEEN 6 AND 14
+        AND length(regexp_replace(x, '[0-9]', '', 'g')) <= 6""")
     con.execute("""CREATE TABLE C AS
       WITH pi AS (SELECT p.bank_txn_id, p.confidence pconf, i.* FROM P p JOIN IO i USING (party_id)
                   JOIN LT l USING (bank_txn_id) WHERE i.currency = l.currency AND i.issue_date <= l.booking_date),
@@ -83,6 +85,26 @@ def build(phase: str) -> None:
       FROM OK WHERE bank_txn_id NOT IN (SELECT c.bank_txn_id FROM C c JOIN S s USING (bank_txn_id)
                                         WHERE s.noisy AND c.item_id NOT IN (SELECT item_id FROM OK WHERE OK.bank_txn_id = c.bank_txn_id)
                                           AND c.bank_txn_id IN (SELECT bank_txn_id FROM OK))""")
+    # stage B: one open item of the entity whose amount = the cash and whose number is close to a text token
+    # (no party needed; beats an exact hit on a different item, i.e. a typo that lands on another number)
+    con.execute(f"""CREATE TABLE B AS
+      WITH c AS (SELECT l.bank_txn_id, i.item_id, i.dig, i.po_dig, i.party_id FROM LT l
+                 JOIN IO i ON i.entity = l.entity AND i.currency = l.currency AND i.open_c = l.cash AND i.kind = 'ARI'
+                      AND i.issue_date <= l.booking_date
+                 WHERE l.bank_txn_id NOT IN (SELECT bank_txn_id FROM OUTR)),
+      m AS (SELECT c.*, CASE WHEN t.d = c.dig THEN 'exact'
+                             WHEN length(t.d) = length(c.dig) AND damerau_levenshtein(t.d, c.dig) <= 1 THEN 'typo'
+                             WHEN length(t.d) >= 7 AND length(t.d) < length(c.dig) AND starts_with(c.dig, t.d) THEN 'trunc'
+                             WHEN length(t.d) > length(c.dig) AND ends_with(t.d, c.dig) THEN 'trunc'
+                             WHEN length(c.po_dig) >= 6 AND t.d = c.po_dig THEN 'po' END how
+            FROM c JOIN TK t USING (bank_txn_id))
+      SELECT bank_txn_id, item_id, min(how) how, bool_or(party_id IN (SELECT party_id FROM P p WHERE p.bank_txn_id = m.bank_txn_id)) pok
+      FROM m WHERE how IS NOT NULL GROUP BY 1, 2""")
+    con.execute("""CREATE TABLE B1 AS SELECT * FROM B WHERE how <> 'exact'
+                   QUALIFY count(*) OVER (PARTITION BY bank_txn_id) = 1 AND count(*) OVER (PARTITION BY item_id) = 1""")
+    con.execute("""INSERT INTO OUTR SELECT b.bank_txn_id, b.item_id, i.open_c, '', 'T3f.amt_' || b.how || '.unique', b.how,
+                          CASE WHEN b.pok THEN 0.95 ELSE 0.8 END, 'single open item = cash, number ' || b.how
+                   FROM B1 b JOIN IO i USING (item_id) WHERE (b.how <> 'typo' OR b.pok) AND b.item_id NOT IN (SELECT item_id FROM OUTR)""")
     con.execute(f"COPY (SELECT * FROM OUTR) TO '{w}/fuzzref_links.parquet' (FORMAT parquet)")
     if not os.environ.get("FUZZ_NO_MERGE"):
         con.execute(f"COPY (SELECT * FROM SL0 UNION ALL BY NAME SELECT * FROM OUTR) TO '{side_p}' (FORMAT parquet)")
