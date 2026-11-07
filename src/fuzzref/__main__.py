@@ -58,12 +58,14 @@ def build(phase: str) -> None:
         UNION ALL SELECT pi.*, 'trunc' FROM pi JOIN TK t USING (bank_txn_id)
         WHERE (length(t.d) < length(pi.dig) AND starts_with(pi.dig, t.d))
            OR (length(t.d) > length(pi.dig) AND ends_with(t.d, pi.dig))
+           OR (length(t.d) >= 6 AND length(t.d) < length(pi.dig) AND ends_with(pi.dig, t.d))
         UNION ALL SELECT pi.*, 'exact' FROM pi JOIN TK t USING (bank_txn_id) WHERE t.d = pi.dig
         UNION ALL SELECT pi.*, 'po' FROM pi JOIN TK t USING (bank_txn_id) WHERE length(pi.po_dig) >= 6 AND t.d = pi.po_dig)
       SELECT bank_txn_id, item_id, any_value(kind) kind, any_value(open_c) open_c, any_value(total_cents) total_cents,
              any_value(issue_date) issue_date, any_value(discount_pct) discount_pct, any_value(discount_days) discount_days,
              max(pconf) pconf, string_agg(DISTINCT how, '+') how
       FROM m GROUP BY bank_txn_id, item_id""")
+    con.execute(f"COPY C TO '{w}/fuzz_cands.parquet' (FORMAT parquet)")
     # keep lines where at least one item came from a noisy key (exact-only lines are the matcher's job)
     con.execute("""CREATE TABLE S AS
       SELECT c.bank_txn_id, sum(CASE WHEN kind = 'ARC' THEN -open_c ELSE open_c END) s, count(*) n,

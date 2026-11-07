@@ -27,6 +27,22 @@ def build(phase: str) -> None:
     p = f"{w}/allocations.parquet"
     con = duckdb.connect()
     con.execute(f"CREATE TABLE A AS SELECT * FROM '{p}'")
+    # fill_ref: lines that ended with no item but whose text quotes open items of their party exactly / by PO / by
+    # an exact+truncated number (T3f candidates, window precision 97.3 %) -> those items at their open amount
+    cands = f"{w}/fuzz_cands.parquet"
+    if os.path.exists(cands):
+        con.execute(f"""CREATE TABLE FILL AS
+          SELECT c.bank_txn_id, c.item_id, c.open_c AS amount_cents, NULL::VARCHAR AS category, '' AS exception,
+                 'T5b.fill_ref.' || replace(c.how, '+', '_') AS rule, 0.9 AS confidence,
+                 'no item after T3; text quotes ' || c.how || ' number of a party item' AS evidence
+          FROM '{cands}' c
+          WHERE c.how NOT IN ('trunc', 'typo', 'typo+trunc', 'trunc+typo') AND c.kind = 'ARI'
+            AND c.bank_txn_id IN (SELECT bank_txn_id FROM A GROUP BY 1 HAVING count(item_id) = 0)
+            AND c.item_id NOT IN (SELECT item_id FROM A WHERE item_id IS NOT NULL)
+          QUALIFY row_number() OVER (PARTITION BY c.item_id ORDER BY c.bank_txn_id) = 1""")
+        con.execute("DELETE FROM A WHERE item_id IS NULL AND bank_txn_id IN (SELECT bank_txn_id FROM FILL)")
+        con.execute("INSERT INTO A BY NAME SELECT * FROM FILL")
+        print("fill_ref:", con.sql("SELECT count(DISTINCT bank_txn_id), count(*) FROM FILL").fetchall())
     con.execute(f"""CREATE TABLE X AS
       SELECT a.bank_txn_id, a.item_id, i.kind, i.currency icur, l.currency lcur, l.booking_date, abs(l.amount_cents) cash,
              i.open_at_start_cents - coalesce(sum(a.amount_cents) FILTER (WHERE coalesce(a.exception, '') NOT IN ('RETURNED', 'DUPLICATE_PAYMENT'))
