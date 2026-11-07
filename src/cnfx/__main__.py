@@ -15,6 +15,9 @@ anywhere in the phase are never reused, and an item picked by two lines is given
   search  per line, over a small pool (numpy, meet-in-the-middle on <= MITM_MAX items): every subset whose signed sum
           equals the target within 1 cent; over a bigger pool: runs of consecutive items in issue-date order.
           A line is accepted only when exactly one solution exists.
+          A bigger pool with no run: subsets of the items due in windows around the booking date (WINDOWS) small
+          enough for the exact search, unique over all windows (rule T3x.win.*; never with a credit note).
+          An item picked by two lines goes to the stronger search (subset > run > win, rank 1 > alt) or to neither.
   rows    every item at its full open amount; invoices of an FX line carry FX_DIFFERENCE, credit notes no exception.
 Rule ids T3x.<search>.<cn|fx|plain>[.add], confidence by search kind, evidence = pool size, solution size, target.
 Window 2024-07 -> 2025-06 on top of 91.04: 6.4k pairs on 1.8k lines (pair precision: plain 90-99 %, fx 100 %,
@@ -38,9 +41,12 @@ RUN_MAX = 400      # pool cap for the consecutive-run search
 TOL = 1            # cents
 ALT_RANKS = 3      # T4 ranks tried when rank 1 has no solution (0 = off)
 ALT_MIN_CONF = 0.0
+WINDOWS = [(b, a) for a in (0, 10, 31) for b in (31, 62, 93, 186)]   # (days back, days ahead) of the due date
+WIN_CN = False
+PRIO = "CASE split_part(how, '_', 1) WHEN 'subset' THEN 0 WHEN 'run' THEN 1 ELSE 2 END + CASE WHEN how LIKE '%_alt' THEN 3 ELSE 0 END"
 AGE_MAX = {"ARI": 365, "ARC": 240}   # days between issue and receipt (TRAIN golden: 99.7 % / 99.6 % of AR pairs)
-DEFAULT_RULES = "subset,run,subset_alt,run_alt"
-CONF = {"subset": 0.9, "run": 0.85, "alt": 0.6}
+DEFAULT_RULES = "subset,run,win,subset_alt,run_alt,win_alt"
+CONF = {"subset": 0.9, "run": 0.85, "alt": 0.6, "win": 0.7}
 
 
 def _sums(v: np.ndarray) -> np.ndarray:
@@ -90,6 +96,22 @@ def run_solutions(v: np.ndarray, t: int, cap: int = 3) -> list[tuple[int, int]]:
     return out
 
 
+def window_solutions(v: np.ndarray, dd: np.ndarray, t: int) -> list[np.ndarray]:
+    """Big pool: subsets of the items due in a window around the receipt (due - booking in [-back, +ahead]) that are
+    small enough for the exact search. Distinct solutions over all windows; the caller wants exactly one."""
+    seen = {}
+    for back, ahead in WINDOWS:
+        idx = np.nonzero((dd >= -back) & (dd <= ahead))[0]
+        if len(idx) == 0 or len(idx) > MITM_MAX:
+            continue
+        for m in subset_solutions(v[idx], t):
+            sel = idx[m]
+            seen[tuple(sel)] = sel
+        if len(seen) > 1:
+            break
+    return list(seen.values())
+
+
 def build(phase: str, alloc: str | None = None, rules: str = DEFAULT_RULES, work: str | None = None) -> None:
     t0 = time.time()
     w = work or os.path.join(REPO, "work", phase)
@@ -98,7 +120,8 @@ def build(phase: str, alloc: str | None = None, rules: str = DEFAULT_RULES, work
     con = duckdb.connect()
     con.execute(f"SET threads=8; SET memory_limit='10GB'; SET temp_directory='{REPO}/work/tmp'")
     con.execute(f"CREATE TABLE A AS SELECT * FROM '{p}'")
-    con.execute(f"""CREATE TABLE I AS SELECT item_id, kind, party_id, currency, open_at_start_cents open_c, issue_date
+    con.execute(f"""CREATE TABLE I AS SELECT item_id, kind, party_id, currency, open_at_start_cents open_c, issue_date,
+                           coalesce(due_date, issue_date) due_date
                     FROM '{w}/items.parquet' WHERE kind IN ('ARI', 'ARC') AND open_at_start_cents > 0""")
     con.execute("CREATE TABLE USED AS SELECT DISTINCT item_id FROM A WHERE item_id IS NOT NULL")
     # target receipts: no item, or items (in the target currency) short of the instructed amount
@@ -135,19 +158,20 @@ def build(phase: str, alloc: str | None = None, rules: str = DEFAULT_RULES, work
             AND p.party_id NOT IN (SELECT party_id FROM LP q WHERE q.bank_txn_id = p.bank_txn_id)""")
     con.execute(f"""CREATE TABLE POOL AS
       SELECT t.bank_txn_id, CASE LP.grp WHEN 'p1' THEN 'p1' ELSE LP.party_id END grp, i.item_id, i.kind, i.open_c,
-             i.issue_date, CASE WHEN i.kind = 'ARC' THEN -i.open_c ELSE i.open_c END sv
+             i.issue_date, (i.due_date - t.bd)::INT dd, CASE WHEN i.kind = 'ARC' THEN -i.open_c ELSE i.open_c END sv
       FROM LT t JOIN LP USING (bank_txn_id) JOIN I i ON i.party_id = LP.party_id AND i.currency = t.tcur
       WHERE i.issue_date <= t.bd AND t.bd - i.issue_date <= CASE i.kind WHEN 'ARC' THEN {AGE_MAX['ARC']} ELSE {AGE_MAX['ARI']} END
         AND i.item_id NOT IN (SELECT item_id FROM USED)""")
     df = con.sql(f"""SELECT p.bank_txn_id, p.grp, any_value(t.rem) rem, list(p.item_id ORDER BY p.issue_date, p.item_id) ids,
-                            list(p.sv ORDER BY p.issue_date, p.item_id) v, count(*) n
+                            list(p.sv ORDER BY p.issue_date, p.item_id) v, count(*) n,
+                            list(p.dd ORDER BY p.issue_date, p.item_id) dd
                      FROM POOL p JOIN LT t USING (bank_txn_id) GROUP BY 1, 2 HAVING count(*) <= {RUN_MAX}
                      ORDER BY 1, p.grp <> 'p1', 2""").df()
     print(f"[{phase}] cnfx: {con.sql('SELECT count(*) FROM LT').fetchall()[0][0]} target lines, {len(df)} pools "
           f"({time.time() - t0:.0f}s)")
     sols = {}   # line -> list of (grp, how, n, selection)
     diag = []
-    for b, grp, rem, ids, v, n in df.itertuples(index=False):
+    for b, grp, rem, ids, v, n, dd in df.itertuples(index=False):
         v = np.asarray(v, dtype=np.int64)
         rem = int(rem)
         if rem <= 0:
@@ -156,6 +180,8 @@ def build(phase: str, alloc: str | None = None, rules: str = DEFAULT_RULES, work
             how, sel = "subset", [np.nonzero(m)[0] for m in subset_solutions(v, rem)]
         else:
             how, sel = "run", [np.arange(i, j) for i, j in run_solutions(v, rem)]
+            if not sel and WINDOWS:
+                how, sel = "win", window_solutions(v, np.asarray(dd, dtype=np.int64), rem)
         diag.append((b, grp, int(n), how, len(sel)))
         sols.setdefault(b, []).extend((grp, how, int(n), ids, x, rem) for x in sel)
     picks = []
@@ -173,8 +199,17 @@ def build(phase: str, alloc: str | None = None, rules: str = DEFAULT_RULES, work
     con.register("Pdf", P)
     con.execute("CREATE TABLE PICK AS SELECT * FROM Pdf")
     con.execute(f"DELETE FROM PICK WHERE how NOT IN ({', '.join(repr(r) for r in keep) or 'NULL'})")
-    con.execute("DELETE FROM PICK WHERE bank_txn_id IN (SELECT bank_txn_id FROM PICK WHERE item_id IN "
-                "(SELECT item_id FROM PICK GROUP BY 1 HAVING count(DISTINCT bank_txn_id) > 1))")
+    if not WIN_CN:   # window sets with a credit note land on the right items < 50 % of the time
+        con.execute("""DELETE FROM PICK WHERE how LIKE 'win%' AND bank_txn_id IN
+                       (SELECT bank_txn_id FROM PICK JOIN I USING (item_id) WHERE I.kind = 'ARC')""")
+    # an item picked by two lines goes to the line with the strongest search if it is the only one at that level,
+    # otherwise to neither; a line that loses an item loses all its picks
+    con.execute(f"""CREATE TABLE LOSE AS
+      WITH r AS (SELECT bank_txn_id, item_id, {PRIO} pr FROM PICK),
+           c AS (SELECT item_id, min(pr) best, count(*) FILTER (WHERE pr = mpr) nb
+                 FROM (SELECT *, min(pr) OVER (PARTITION BY item_id) mpr FROM r) GROUP BY 1 HAVING count(*) > 1)
+      SELECT DISTINCT r.bank_txn_id FROM r JOIN c USING (item_id) WHERE r.pr > c.best OR c.nb > 1""")
+    con.execute("DELETE FROM PICK WHERE bank_txn_id IN (SELECT bank_txn_id FROM LOSE)")
     con.execute(f"""CREATE TABLE NEW AS
       WITH f AS (SELECT p.*, i.kind, i.open_c, t.tcur, t.lcur, t.nit,
                         bool_or(i.kind = 'ARC') OVER (PARTITION BY p.bank_txn_id) has_cn
@@ -183,7 +218,7 @@ def build(phase: str, alloc: str | None = None, rules: str = DEFAULT_RULES, work
              CASE WHEN tcur <> lcur AND kind = 'ARI' THEN 'FX_DIFFERENCE' ELSE '' END exception,
              'T3x.' || how || '.' || CASE WHEN tcur <> lcur THEN 'fx' WHEN has_cn THEN 'cn' ELSE 'plain' END
                || CASE WHEN nit > 0 THEN '.add' ELSE '' END rule,
-             CASE how WHEN 'subset' THEN {CONF['subset']} WHEN 'run' THEN {CONF['run']} ELSE {CONF['alt']} END confidence,
+             CASE how WHEN 'subset' THEN {CONF['subset']} WHEN 'run' THEN {CONF['run']} WHEN 'win' THEN {CONF['win']} ELSE {CONF['alt']} END confidence,
              'party open items: ' || k || ' of ' || n || ' sum to the ' || tcur || ' amount left ' || rem
                || ' (unique ' || how || ')' evidence
       FROM f""")
