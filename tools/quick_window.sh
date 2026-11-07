@@ -21,14 +21,14 @@ for f in work/window/line_party.parquet work/window/line_category.parquet work/w
   [[ -f $f ]] || { echo "missing $f: run src/final/run_phase.sh window once"; exit 1; }
 done
 # post-matcher steps, same order as src/final/run_phase.sh (refnoise = T14)
-POST="postfix pdffacts docrules excnorm multiref refnoise cnlink mixfix instrep discombo twopay unident cnfx duefill tolmatch cnmore excfix"
+POST="postfix pdffacts docrules excnorm multiref refnoise cnlink mixfix instrep discombo twopay unident cnfx duefill tolmatch cnmore refgap cnrest cnfill fxlate excfix"
 case $FROM in
-  sidefiles)    STAGES="sidefiles sidemerge remit fuzzref match exceptions postfix pdffacts docrules excnorm multiref refnoise cnlink mixfix instrep discombo twopay unident cnfx duefill tolmatch cnmore excfix" ;;
-  sidefiles_ap) STAGES="sidefiles sidefiles_ap sidemerge remit fuzzref match exceptions postfix pdffacts docrules excnorm multiref refnoise cnlink mixfix instrep discombo twopay unident cnfx duefill tolmatch cnmore excfix" ;;
-  remit)        STAGES="remit fuzzref match exceptions postfix pdffacts docrules excnorm multiref refnoise cnlink mixfix instrep discombo twopay unident cnfx duefill tolmatch cnmore excfix" ;;
-  fuzzref)      STAGES="fuzzref match exceptions postfix pdffacts docrules excnorm multiref refnoise cnlink mixfix instrep discombo twopay unident cnfx duefill tolmatch cnmore excfix" ;;
-  match)        STAGES="match exceptions postfix pdffacts docrules excnorm multiref refnoise cnlink mixfix instrep discombo twopay unident cnfx duefill tolmatch cnmore excfix" ;;
-  exceptions)   STAGES="exceptions postfix pdffacts docrules excnorm multiref refnoise cnlink mixfix instrep discombo twopay unident cnfx duefill tolmatch cnmore excfix" ;;
+  sidefiles)    STAGES="sidefiles sidemerge remit fuzzref match exceptions postfix pdffacts docrules excnorm multiref refnoise cnlink mixfix instrep discombo twopay unident cnfx duefill tolmatch cnmore refgap cnrest cnfill fxlate excfix" ;;
+  sidefiles_ap) STAGES="sidefiles sidefiles_ap sidemerge remit fuzzref match exceptions postfix pdffacts docrules excnorm multiref refnoise cnlink mixfix instrep discombo twopay unident cnfx duefill tolmatch cnmore refgap cnrest cnfill fxlate excfix" ;;
+  remit)        STAGES="remit fuzzref match exceptions postfix pdffacts docrules excnorm multiref refnoise cnlink mixfix instrep discombo twopay unident cnfx duefill tolmatch cnmore refgap cnrest cnfill fxlate excfix" ;;
+  fuzzref)      STAGES="fuzzref match exceptions postfix pdffacts docrules excnorm multiref refnoise cnlink mixfix instrep discombo twopay unident cnfx duefill tolmatch cnmore refgap cnrest cnfill fxlate excfix" ;;
+  match)        STAGES="match exceptions postfix pdffacts docrules excnorm multiref refnoise cnlink mixfix instrep discombo twopay unident cnfx duefill tolmatch cnmore refgap cnrest cnfill fxlate excfix" ;;
+  exceptions)   STAGES="exceptions postfix pdffacts docrules excnorm multiref refnoise cnlink mixfix instrep discombo twopay unident cnfx duefill tolmatch cnmore refgap cnrest cnfill fxlate excfix" ;;
   post)         STAGES="$POST" ;;
   *) echo "unknown stage $FROM"; exit 1 ;;
 esac
