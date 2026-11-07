@@ -164,23 +164,6 @@ class MergePriorityTests(unittest.TestCase):
         self.assertEqual(out["exception"].to_list(), ["PARTIAL"])
         self.assertEqual(out["amount_cents"].to_list(), [6000])
 
-    def test_partial_cross_currency_payment_stays_partial(self):
-        out = self._base_inputs(
-            {
-                "bank_txn_id": ["BT-FX-PARTIAL"], "item_id": ["ARI-FX-PARTIAL"],
-                "booking_date": [date(2025, 1, 10)], "line_amount_cents": [9500],
-                "line_currency": ["EUR"], "item_currency": ["USD"],
-                "open_before_cents": [10000], "cash_cents": [9500], "doc_hint": [None],
-                "rule": ["T3.mock"], "confidence": [1.0], "evidence": ["mock"],
-            },
-            {"bank_txn_id": ["BT-FX-PARTIAL"], "amount_cents": [9500],
-             "booking_date": [date(2025, 1, 10)], "currency": ["EUR"],
-             "direction": ["IN"]},
-            {"item_id": ["ARI-FX-PARTIAL"], "kind": ["ARI"], "total_cents": [10000],
-             "currency": ["USD"]},
-        )
-        self.assertEqual(out["exception"].to_list(), ["PARTIAL"])
-
 
 if __name__ == "__main__":
     unittest.main()

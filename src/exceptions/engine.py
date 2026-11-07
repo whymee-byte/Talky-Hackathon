@@ -141,15 +141,13 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
        WHEN reverse_direction OR (coalesce(is_return_hint, false) AND open_before_cents<=0) THEN 'RETURNED'
        -- A returned collection re-presented against a reopened balance is a normal payment.
        WHEN open_before_cents<=0 AND normal_direction THEN 'DUPLICATE_PAYMENT'
-       -- Partial and explicitly disputed applications keep their specific code;
-       -- FX and deduction codes are only for full clearing.
-       WHEN has_dispute AND NOT exact_same THEN 'SHORT_DISPUTE'
-       WHEN is_fx AND kind IN ('ARI','API') AND fx_band AND applied_i >= open_c THEN 'FX_DIFFERENCE'
-       WHEN NOT is_fx AND kind='ARI' AND discount_ok AND applied_i >= open_c THEN 'SHORT_DISCOUNT'
+       WHEN is_fx AND kind IN ('ARI','API') AND fx_band THEN 'FX_DIFFERENCE'
+       WHEN NOT is_fx AND kind='ARI' AND discount_ok THEN 'SHORT_DISCOUNT'
        WHEN NOT is_fx AND country IN ('MX','BR','MA') AND kind IN ('ARI','API') AND
             (wht_candidate OR (wht_item_candidate AND wht_item_candidates=1)) THEN 'SHORT_WITHHOLDING'
-       WHEN NOT is_fx AND n_pair=1 AND bank_charge_ok AND applied_i >= open_c THEN 'SHORT_BANK_CHARGES'
+       WHEN NOT is_fx AND n_pair=1 AND bank_charge_ok THEN 'SHORT_BANK_CHARGES'
        WHEN NOT is_fx AND n_pair=1 AND kind='ARI' AND normal_direction AND applied_i > open_c THEN 'OVERPAYMENT'
+       WHEN has_dispute AND NOT exact_same THEN 'SHORT_DISPUTE'
        WHEN kind IN ('ARI','API') AND applied_i < open_c THEN 'PARTIAL'
        ELSE '' END exception_code
       FROM (SELECT *, sum(CASE WHEN wht_item_candidate THEN 1 ELSE 0 END)
