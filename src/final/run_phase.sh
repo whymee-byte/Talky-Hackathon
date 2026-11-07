@@ -49,6 +49,7 @@ step "unidentified"     $PY -u -m src.unident     --phase "$PHASE"
 [[ -n "${NO_T3G:-}" ]] || step "tolerant matches (T3g)" $PY -u -m src.tolmatch --phase "$PHASE"
 step "last exception fixes (T15)" $PY -u -m src.excfix --phase "$PHASE"
 [[ -n "${NO_T3G:-}" ]] || step "overpayment shape (T3g)" $PY -u -m src.tolmatch --phase "$PHASE" --overfix
+[[ -n "${NO_T3G:-}" ]] || step "learned unidentified (T3u)" $PY -u -m src.tolmatch.unid apply --phase "$PHASE"
 if [[ "$PHASE" == "window" || "$PHASE" == "sample" ]]; then
   step "write + score" $PY -u -m src.submit --phase "$PHASE" --from "work/$PHASE/allocations.parquet" --score
 else
