@@ -17,7 +17,10 @@ import os
 import time
 
 import duckdb
+import numpy as np
 import pyarrow as pa
+
+from src.agecomb import model as pm
 
 AGE_MAX = int(os.environ.get("AC_AGE", 150))
 SKIP_MAX = int(os.environ.get("AC_SKIP", 30))
@@ -50,17 +53,17 @@ def solve(vs, target, cap=2):
     return out
 
 
-def build(phase, do_eval=False):
+def build(phase, do_eval=False, learn_model=False):
     t0 = time.time()
     w = f"work/{phase}"
     con = duckdb.connect()
     con.execute("SET preserve_insertion_order=false")
     con.execute(f"CREATE TABLE A AS SELECT * FROM '{w}/allocations.parquet'")
     con.execute(f"CREATE TABLE LN AS SELECT bank_txn_id, booking_date, direction, abs(amount_cents) cash, currency FROM '{w}/lines.parquet'")
-    con.execute(f"""CREATE TABLE IT AS SELECT item_id, party_id, issue_date, open_at_start_cents v, currency
+    con.execute(f"""CREATE TABLE IT AS SELECT item_id, party_id, issue_date, due_date, open_at_start_cents v, currency, po_norm, total_cents
                     FROM '{w}/items.parquet' WHERE kind = 'ARI' AND open_at_start_cents > 0""")
     con.execute(f"""CREATE TABLE L AS
-      SELECT l.bank_txn_id, l.booking_date bd, l.cash, l.currency, p.party_id
+      SELECT l.bank_txn_id, l.booking_date bd, l.cash, l.currency, p.party_id, p.confidence pc
       FROM LN l
       JOIN (SELECT bank_txn_id FROM A GROUP BY 1 HAVING count(item_id) = 0) n USING (bank_txn_id)
       JOIN '{w}/line_party.parquet' p ON p.bank_txn_id = l.bank_txn_id AND p.rank = 1 AND p.confidence >= {PARTY_MIN}
@@ -153,8 +156,25 @@ def build(phase, do_eval=False):
         con.execute("""INSERT INTO USED SELECT n.item_id, l.bd FROM newdf n JOIN L l USING (bank_txn_id)
                        WHERE n.item_id NOT IN (SELECT item_id FROM USED)""")
         total.extend(out)
+    # learned pair model on what is still unmatched (weights versioned in src/agecomb/weights.npy)
+    con.execute("CREATE TABLE MODEL (bank_txn_id VARCHAR, item_id VARCHAR, p DOUBLE)")
+    if learn_model:
+        pm.learn(con)
+    if os.path.exists(pm.WEIGHTS) and not os.environ.get("AC_NO_MODEL"):
+        d = con.execute(pm.FEATURE_SQL).fetchnumpy()
+        p = pm.predict(d, np.load(pm.WEIGHTS))
+        m = p >= pm.P_MIN
+        con.register("mdf", pa.table({"bank_txn_id": d["bank_txn_id"][m], "item_id": d["item_id"][m], "p": p[m]}))
+        con.execute("INSERT INTO MODEL SELECT * FROM mdf")
+        print(f"  model: {len(p)} candidates -> {int(m.sum())} pairs with p >= {pm.P_MIN} on "
+              f"{con.execute('SELECT count(DISTINCT bank_txn_id) FROM MODEL').fetchone()[0]} lines")
     con.execute(f"""COPY (
-      SELECT * FROM A WHERE bank_txn_id NOT IN (SELECT bank_txn_id FROM NEW)
+      SELECT * FROM A WHERE bank_txn_id NOT IN (SELECT bank_txn_id FROM NEW) AND bank_txn_id NOT IN (SELECT bank_txn_id FROM MODEL)
+      UNION ALL BY NAME
+      SELECT m.bank_txn_id, m.item_id, i.v amount_cents, NULL::VARCHAR category, '' exception,
+             '{RULE}.model' rule, round(m.p, 3) confidence,
+             'learned pair model (age, skips, delay, PO, amounts) p=' || round(m.p, 2) evidence
+      FROM MODEL m JOIN IT i USING (item_id)
       UNION ALL BY NAME
       SELECT n.bank_txn_id, n.item_id, i.v amount_cents, NULL::VARCHAR category, '' exception,
              '{RULE}' || CASE WHEN n.n_cand < 0 THEN '.ref' ELSE '' END || CASE WHEN n.n_sol = 1 THEN '' ELSE '.marg' END rule,
@@ -166,6 +186,13 @@ def build(phase, do_eval=False):
     ) TO '{w}/allocations.parquet' (FORMAT parquet)""")
     print(f"[{phase}] T23 agecomb: {len({b for b, _, _, _ in total})} lines, {len(total)} pairs ({time.time() - t0:.0f}s)")
     if do_eval and os.path.exists("data_cache/train/golden_allocations.parquet"):
+        r = con.execute("""
+          WITH g AS (SELECT bank_txn_id, item_id FROM 'data_cache/train/golden_allocations.parquet' WHERE item_id IS NOT NULL),
+               per AS (SELECT n.bank_txn_id, count(*) n_a, sum((g.item_id IS NOT NULL)::int) n_ok,
+                              (SELECT count(*) FROM g WHERE g.bank_txn_id = n.bank_txn_id) n_g
+                       FROM MODEL n LEFT JOIN g USING (bank_txn_id, item_id) GROUP BY 1)
+          SELECT count(*), sum((n_a = n_ok AND n_a = n_g)::int), sum(n_a), sum(n_ok) FROM per""").fetchone()
+        print(f"  eval model: lines {r[0]} exact {r[1]} | pairs {r[2]} ok {r[3]} (P {r[3] / max(1, r[2]):.3f})")
         r = con.execute("""
           WITH g AS (SELECT bank_txn_id, item_id FROM 'data_cache/train/golden_allocations.parquet' WHERE item_id IS NOT NULL),
                per AS (SELECT n.bank_txn_id, count(*) n_a, sum((g.item_id IS NOT NULL)::int) n_ok,
@@ -184,5 +211,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", required=True, choices=["sample", "window", "live", "final"])
     ap.add_argument("--eval", action="store_true", help="window only: precision against the golden")
+    ap.add_argument("--learn", action="store_true", help="window only: refit src/agecomb/weights.npy before applying it")
     a = ap.parse_args()
-    build(a.phase, a.eval)
+    build(a.phase, a.eval, a.learn)
