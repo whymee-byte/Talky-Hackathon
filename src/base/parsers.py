@@ -457,7 +457,17 @@ def parse_file(path: Path) -> Iterator[NormalizedTransaction | MalformedRecord]:
     elif suffix in {".sta", ".mt940"}:
         yield from parse_mt940(path)
     else:
-        yield _error(path, "", f"unsupported statement format: {suffix or '<none>'}", None, suffix.lstrip(".") or None)
+        try:
+            raw_record = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raw_record = f"<unreadable file: {exc}>"
+        yield _error(
+            path,
+            raw_record,
+            f"unsupported statement format: {suffix or '<none>'}",
+            None,
+            suffix.lstrip(".") or None,
+        )
 
 
 __all__ = [
