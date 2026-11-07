@@ -3,7 +3,7 @@ import os
 
 import duckdb
 
-RAW = "data/bankrec-docs-and-masters"
+RAW = os.environ.get("HK_DATA", "data/bankrec-docs-and-masters")
 CACHE = "data_cache"
 WORK = "work"
 WINDOW_START = "2024-07-01"     # honest evaluation window: TRAIN 2024-07 -> 2025-06
@@ -31,6 +31,8 @@ def src(phase, table):
 
 
 def master(name):
+    if os.environ.get("HK_PHASE") == "final" and os.path.exists(f"{RAW}/final/masters_final/{name}.csv"):
+        return f"read_csv('{RAW}/final/masters_final/{name}.csv', sample_size=-1)"
     pq = f"{CACHE}/masters/{name}.parquet"
     if os.path.exists(pq):
         return f"read_parquet('{pq}')"

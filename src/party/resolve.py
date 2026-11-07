@@ -59,10 +59,10 @@ def candidates(con, phase, model):
                 JOIN pairs_ok po ON po.line_entity = x.entity AND po.party_entity = mk.entity""")
     q.append(f"""SELECT x.bank_txn_id, mk.party_id, 'master' AS fam, 'master_' || mk.source || '_short' AS rule,
                    {MASTER_SHORT} / mk.n_parties AS conf, 'name=' || mk.key AS evidence
-            FROM sfx x JOIN '{m}/master_keys.parquet' mk
-              ON mk.L BETWEEN {SHORT_MIN} AND {min(KEY_LENGTHS) - 1} AND mk.key = left(x.s, mk.L)
-             AND mk.n_parties <= {MAX_MASTER_PARTIES}
-             AND (length(x.s) = mk.L OR substr(x.s, mk.L + 1, 1) = ' ')
+            FROM sfx x CROSS JOIN (SELECT unnest(range({SHORT_MIN}, {min(KEY_LENGTHS)})) AS L) ls
+            JOIN '{m}/master_keys.parquet' mk
+              ON mk.L = ls.L AND mk.key = left(x.s, ls.L) AND mk.n_parties <= {MAX_MASTER_PARTIES}
+             AND (length(x.s) = ls.L OR substr(x.s, ls.L + 1, 1) = ' ')
             JOIN pairs_ok po ON po.line_entity = x.entity AND po.party_entity = mk.entity""")
     # IBAN
     q.append(f"""SELECT l.bank_txn_id, ib.party_id, 'iban' AS fam, ib.source AS rule,
@@ -108,29 +108,34 @@ def candidates(con, phase, model):
                    FROM t, LATERAL (SELECT unnest(range(1, least(len(tok), 60) + 1)) AS i),
                         LATERAL (SELECT unnest([1, 2, 3]) AS w)
                    WHERE i + w - 1 <= len(tok)),
-             k AS (SELECT DISTINCT bank_txn_id, 'alnum' AS kt, x AS key FROM g WHERE regexp_matches(x, '[0-9]')
-                   UNION SELECT bank_txn_id, 'dig', ltrim(regexp_replace(x, '[^0-9]', '', 'g'), '0') FROM g
-                   WHERE regexp_matches(x, '[0-9]'))
+             gd AS (SELECT bank_txn_id, x FROM g WHERE length(x) >= 6 AND regexp_matches(x, '[0-9]')),
+             k AS (SELECT DISTINCT bank_txn_id, 'alnum' AS kt, x AS key FROM gd
+                   UNION SELECT bank_txn_id, 'dig', k_dig FROM (SELECT bank_txn_id, ltrim(regexp_replace(x, '[^0-9]', '', 'g'), '0') AS k_dig FROM gd)
+                   WHERE length(k_dig) >= 6)
         SELECT * FROM k""")
+    # one join line keys x document index; (a) and (b) below read it instead of repeating the join
+    con.execute("""CREATE OR REPLACE TEMP TABLE dochits AS
+        SELECT k.bank_txn_id, k.kt, k.key, di.party_id, di.n_parties
+        FROM linekeys k JOIN docidx di ON di.kt = k.kt AND di.key = k.key""")
     # (a) specific numbers (<= 5 parties) are evidence on their own
     con.execute(f"""INSERT INTO cand
-        SELECT k.bank_txn_id, di.party_id, 'doc_ref', 'doc_ref_' || k.kt,
-               max(CASE k.kt WHEN 'alnum' THEN {DOC_CONF['alnum']} ELSE {DOC_CONF['dig']} END / di.n_parties),
+        SELECT k.bank_txn_id, k.party_id, 'doc_ref', 'doc_ref_' || k.kt,
+               max(CASE k.kt WHEN 'alnum' THEN {DOC_CONF['alnum']} ELSE {DOC_CONF['dig']} END / k.n_parties),
                'doc=' || min(k.key)
-        FROM linekeys k JOIN docidx di ON di.kt = k.kt AND di.key = k.key
-        WHERE di.n_parties <= {DOC_MAX_PARTIES}
+        FROM dochits k
+        WHERE k.n_parties <= {DOC_MAX_PARTIES}
         GROUP BY 1, 2, 4""")
     # (b) generic numbers (INV0002607 exists for many suppliers) only confirm a party already proposed
     con.execute(f"""INSERT INTO cand
-        SELECT k.bank_txn_id, di.party_id, 'doc_confirm', 'doc_ref_confirms_' || k.kt,
+        SELECT k.bank_txn_id, k.party_id, 'doc_confirm', 'doc_ref_confirms_' || k.kt,
                max(CASE k.kt WHEN 'alnum' THEN {DOC_CONF['alnum']} ELSE {DOC_CONF['dig']} END) * 0.8,
                'doc=' || min(k.key)
-        FROM linekeys k JOIN docidx di ON di.kt = k.kt AND di.key = k.key
+        FROM dochits k
         JOIN (SELECT DISTINCT bank_txn_id, party_id FROM cand) c
-          ON c.bank_txn_id = k.bank_txn_id AND c.party_id = di.party_id
-        WHERE di.n_parties > {DOC_MAX_PARTIES}
+          ON c.bank_txn_id = k.bank_txn_id AND c.party_id = k.party_id
+        WHERE k.n_parties > {DOC_MAX_PARTIES}
         GROUP BY 1, 2, 4""")
-    con.execute("DROP TABLE docidx; DROP TABLE linekeys")
+    con.execute("DROP TABLE docidx; DROP TABLE linekeys; DROP TABLE dochits")
     # amount hint: separates homonyms. Only for parties already proposed by other evidence (never on its own).
     base = "train" if phase in ("window", "learn") else phase
     from .common import src
@@ -184,7 +189,7 @@ def rank(con, phase, extra=None):
     return out
 
 
-def run(phase, model, fuzzy=True):
+def run(phase, model, fuzzy=True, apply_calibration=True):
     con = connect()
     candidates(con, phase, model)
     extra = None
@@ -195,6 +200,6 @@ def run(phase, model, fuzzy=True):
     con.close()
     import os
     from . import calibrate
-    if os.path.exists(calibrate.CAL):
+    if apply_calibration and os.path.exists(calibrate.CAL):
         calibrate.apply(phase)
     return out

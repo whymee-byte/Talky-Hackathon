@@ -48,7 +48,7 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
         ("p", pcols, {"doc_hint": "VARCHAR"}),
         ("l", lcols, {"bank_code": "VARCHAR", "bank_subcode": "VARCHAR", "statement_format": "VARCHAR",
                       "text_norm": "VARCHAR", "orig_amount_cents": "BIGINT", "orig_currency": "VARCHAR",
-                      "direction": "VARCHAR", "entity": "VARCHAR"}),
+                      "direction": "VARCHAR", "entity": "VARCHAR", "is_return_hint": "BOOLEAN"}),
         ("i", icols, {"issue_date": "DATE", "payment_terms": "VARCHAR", "discount_pct": "DOUBLE",
                       "discount_days": "INTEGER", "party_id": "VARCHAR", "currency": "VARCHAR"}),
         ("cu", ccols, {"country": "VARCHAR"}),
@@ -74,7 +74,7 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
     con.execute("""CREATE TEMP TABLE B AS
       SELECT p.*, l.amount_cents AS actual_line_cents, l.booking_date AS line_booking_date,
         l.currency AS actual_line_currency, l.orig_amount_cents, l.orig_currency, l.bank_code,
-        l.bank_subcode, l.statement_format, l.text_norm, l.direction, l.entity,
+        l.bank_subcode, l.statement_format, l.text_norm, l.direction, l.entity, l.is_return_hint,
         i.kind, i.total_cents, i.issue_date, i.payment_terms, i.discount_pct, i.discount_days,
         i.party_id, coalesce(i.currency, p.item_currency) item_cur, fi.u AS item_units_per_eur,
         cu.country, abs(p.line_amount_cents)::BIGINT line_abs,
@@ -138,40 +138,26 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
     # Populate the policy decision from grouped pair features. Keep rules auditable at row granularity.
     con.execute("""CREATE TEMP TABLE R AS SELECT *,
        CASE
+       WHEN coalesce(is_return_hint, false) OR reverse_direction THEN 'RETURNED'
        WHEN open_before_cents<=0 AND normal_direction THEN 'DUPLICATE_PAYMENT'
-       WHEN reverse_direction THEN 'RETURNED'
        WHEN is_fx AND kind IN ('ARI','API') AND fx_band THEN 'FX_DIFFERENCE'
        WHEN NOT is_fx AND kind='ARI' AND discount_ok THEN 'SHORT_DISCOUNT'
        WHEN NOT is_fx AND country IN ('MX','BR','MA') AND kind IN ('ARI','API') AND
             (wht_candidate OR (wht_item_candidate AND wht_item_candidates=1)) THEN 'SHORT_WITHHOLDING'
        WHEN NOT is_fx AND n_pair=1 AND bank_charge_ok THEN 'SHORT_BANK_CHARGES'
-       WHEN NOT is_fx AND n_pair=1 AND kind='ARI' AND diff < -1 THEN 'OVERPAYMENT'
+       WHEN NOT is_fx AND n_pair=1 AND kind='ARI' AND normal_direction AND applied_i > open_c THEN 'OVERPAYMENT'
        WHEN has_dispute AND NOT exact_same THEN 'SHORT_DISPUTE'
-       WHEN abs(line_cash_i) < abs(signed_open_sum)-greatest(currency_pairs,1) THEN 'PARTIAL'
+       WHEN kind IN ('ARI','API') AND applied_i < open_c THEN 'PARTIAL'
        ELSE '' END exception_code
       FROM (SELECT *, sum(CASE WHEN wht_item_candidate THEN 1 ELSE 0 END)
                       OVER (PARTITION BY bank_txn_id,item_cur) wht_item_candidates FROM D) W""")
-    # Shared multi-item partial: exact amount is allocated to all normal rows except one absorber.
-    # Candidate scoring uses policy-measured total fractions, with most-recent invoice deterministic fallback.
+    # A partial is an item-level balance condition.  T3 supplies the applied amount
+    # for each pair, so do not infer an absorber from arbitrary fractions of the
+    # transaction total.  This keeps the decision aligned with POLICIES §3.
     con.execute("""CREATE TEMP TABLE A AS SELECT *,
       abs(line_cash_i) AS total_cash,
       abs(signed_open_sum)-abs(line_cash_i) AS shortfall,
-      CASE WHEN exception_code='PARTIAL' AND kind IN ('ARI','API') AND (
-        abs(open_c-(abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.1))<=1 OR
-         abs(open_c-(abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.2))<=1 OR
-         abs(open_c-(abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.3))<=1 OR
-         abs(open_c-(abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.4))<=1 OR
-         abs(open_c-(abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.5))<=1 OR
-         abs(open_c-(abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.6))<=1 OR
-         abs(open_c-(abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.7))<=1 OR
-         abs(open_c-(abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.8))<=1 OR
-         abs(open_c-(abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.9))<=1 OR
-         abs((abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.03))<=1 OR
-         abs((abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.05))<=1 OR
-         abs((abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.10))<=1 OR
-         abs((abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.20))<=1 OR
-         abs((abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.30))<=1) THEN 1 ELSE 0 END absorber_candidate,
-      row_number() OVER (PARTITION BY bank_txn_id ORDER BY absorber_candidate DESC, issue_date DESC NULLS LAST, item_id DESC) absorber_rank
+      row_number() OVER (PARTITION BY bank_txn_id ORDER BY item_id) absorber_rank
       FROM R""")
     con.execute("""CREATE TEMP TABLE FINAL AS SELECT *,
        CASE WHEN exception_code='PARTIAL' AND wht_item_candidates=1 AND kind IN ('ARI','API')
@@ -185,11 +171,8 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
        CASE WHEN exception_code='DUPLICATE_PAYMENT' THEN abs(cash_i)
             WHEN exception_code='RETURNED' THEN abs(cash_i)
             WHEN exception_code IN ('SHORT_DISPUTE','PARTIAL') AND n_pair=1 THEN coalesce(applied_i,abs(cash_i))
-            WHEN exception_code='PARTIAL' AND n_pair>1 AND kind IN ('ARI','API') AND
-              absorber_rank=1
-              THEN coalesce(applied_i,greatest(0,open_c-(abs(signed_open_sum)-abs(line_cash_i))))
+            WHEN exception_code='PARTIAL' THEN coalesce(applied_i,abs(cash_i))
             WHEN exception_code IN ('OVERPAYMENT','SHORT_DISCOUNT','SHORT_BANK_CHARGES','SHORT_WITHHOLDING','FX_DIFFERENCE') THEN open_c
-            WHEN exception_code='PARTIAL' AND n_pair>1 THEN open_c
             ELSE open_c END final_amount
        FROM A""")
     out = con.sql("""SELECT bank_txn_id,item_id,CAST(round(final_amount) AS BIGINT) amount_cents,

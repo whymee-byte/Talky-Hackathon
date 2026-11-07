@@ -14,6 +14,8 @@ import argparse
 import os
 import time
 
+from src.match import combo
+from src.common import data_root
 from src.party.common import connect
 
 MONTHS = {1: "ENERO JANUARY JANVIER JANUAR GENNAIO JANEIRO STYCZEN", 2: "FEBRERO FEBRUARY FEVRIER FEBRUAR FEBBRAIO FEVEREIRO LUTY",
@@ -46,6 +48,7 @@ def build(phase):
     w = f"work/{phase}"
     con = connect("5GB")
     model = "pre_window" if phase == "window" else "full"
+    masters = os.path.join(data_root(), "masters").replace(os.sep, "/")
     con.execute(f"CREATE TABLE L AS SELECT * FROM '{w}/lines.parquet'")
     con.execute(f"CREATE TABLE I AS SELECT * FROM '{w}/items.parquet'")
     con.execute(f"""CREATE TABLE ent_ok AS SELECT line_entity, party_entity FROM 'work/party_model/{model}/entity_pairs.parquet'
@@ -55,13 +58,14 @@ def build(phase):
                     rule, confidence, evidence FROM {f"'{w}/side_links.parquet'" if has_side else
                     "(SELECT NULL::VARCHAR bank_txn_id, NULL::VARCHAR item_id, NULL::BIGINT amount_cents, NULL::VARCHAR exception, NULL::VARCHAR rule, NULL::DOUBLE confidence, NULL::VARCHAR evidence WHERE false)"}""")
     con.execute(f"CREATE TABLE P AS SELECT bank_txn_id, party_id, rank, confidence FROM '{w}/line_party.parquet'")
-    con.execute("""CREATE TABLE FX AS SELECT date::DATE AS d, currency, units_per_eur::DOUBLE AS u
-                   FROM read_csv('data/bankrec-docs-and-masters/masters/fx_rates.csv', all_varchar=true)
-                   UNION ALL SELECT DISTINCT date::DATE, 'EUR', 1.0 FROM read_csv('data/bankrec-docs-and-masters/masters/fx_rates.csv', all_varchar=true)""")
+    con.execute(f"""CREATE TABLE FX AS SELECT date::DATE AS d, currency, units_per_eur::DOUBLE AS u
+                   FROM read_csv('{masters}/fx_rates.csv', all_varchar=true)
+                   UNION ALL SELECT DISTINCT date::DATE, 'EUR', 1.0
+                   FROM read_csv('{masters}/fx_rates.csv', all_varchar=true)""")
     # lines still to explain + their cash per unit of currency
     con.execute("""CREATE TABLE LT AS SELECT l.bank_txn_id, l.entity, l.booking_date, l.amount_cents, abs(l.amount_cents) AS cash,
                        l.currency, l.direction, l.text_norm, l.orig_amount_cents, l.orig_currency
-                   FROM L l WHERE l.bank_txn_id NOT IN (SELECT bank_txn_id FROM SL)""")
+                   FROM L l WHERE NOT EXISTS (SELECT 1 FROM SL s WHERE s.bank_txn_id = l.bank_txn_id)""")
     # compatible item kinds per direction, with the sign each kind takes in the line total
     con.execute("""CREATE TABLE KS AS SELECT * FROM (VALUES ('IN','ARI',1), ('IN','ARC',-1), ('IN','APC',1),
                    ('OUT','API',1), ('OUT','APC',-1), ('OUT','ARC',1)) t(direction, kind, sgn)""")
@@ -246,16 +250,17 @@ def build(phase):
            best AS (   -- smallest solution size wins; it must be unique at that size
              SELECT bank_txn_id, items, len(items) k FROM (SELECT * FROM s1 UNION ALL SELECT * FROM s2 UNION ALL SELECT * FROM s3)
              QUALIFY len(items) = min(len(items)) OVER (PARTITION BY bank_txn_id))
-      SELECT bank_txn_id, any_value(items) items, any_value(k) k FROM best GROUP BY 1 HAVING count(*) = 1""")
+      SELECT bank_txn_id, any_value(items) items, any_value(k) k, false AS mitm FROM best GROUP BY 1 HAVING count(*) = 1""")
     con.execute("DROP TABLE CI")
+    combo.add_solutions(con)     # larger subsets (meet in the middle), unique solutions only
     con.execute(f"""CREATE TABLE COMBP AS
-      WITH found AS (SELECT cs.bank_txn_id, unnest(cs.items) item_id, cs.k FROM CS cs),
-           base AS (SELECT r.bank_txn_id, r.item_id, cs.k FROM REFP r JOIN CS cs USING (bank_txn_id)),
-           allp AS (SELECT bank_txn_id, item_id, k, 'found' src FROM found UNION ALL SELECT bank_txn_id, item_id, k, 'base' FROM base)
+      WITH found AS (SELECT cs.bank_txn_id, unnest(cs.items) item_id, cs.k, cs.mitm FROM CS cs),
+           base AS (SELECT r.bank_txn_id, r.item_id, cs.k, cs.mitm FROM REFP r JOIN CS cs USING (bank_txn_id)),
+           allp AS (SELECT bank_txn_id, item_id, k, mitm, 'found' src FROM found UNION ALL SELECT bank_txn_id, item_id, k, mitm, 'base' FROM base)
       SELECT a.bank_txn_id, a.item_id, i.kind, i.party_id, i.issue_date, i.open_at_start_cents open_c,
              i.open_at_start_cents cash_i, false is_fx, i.open_at_start_cents amount_cents, '' exception,
-             'T3.comb.' || CASE WHEN cb.has_base THEN 'ref_plus_' ELSE 'party_' END || a.k AS rule,
-             coalesce(p.confidence, 0.9) * CASE a.k WHEN 1 THEN 0.9 WHEN 2 THEN 0.8 ELSE 0.7 END AS confidence,
+             'T3.comb.' || CASE WHEN cb.has_base THEN 'ref_plus_' ELSE 'party_' END || CASE WHEN a.mitm THEN 'mitm_' ELSE '' END || a.k AS rule,
+             coalesce(p.confidence, 0.9) * CASE WHEN a.mitm THEN 0.65 WHEN a.k = 1 THEN 0.9 WHEN a.k = 2 THEN 0.8 ELSE 0.7 END AS confidence,
              'subset of ' || a.k || ' item(s) = remainder ' || cb.rem || ' (' || a.src || ')' AS evidence
       FROM allp a JOIN CB cb USING (bank_txn_id) JOIN I i USING (item_id)
       LEFT JOIN P p ON p.bank_txn_id = a.bank_txn_id AND p.rank = 1""")
