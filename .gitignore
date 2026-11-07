@@ -5,7 +5,13 @@ out/
 __pycache__/
 .env
 data_cache/
-work/
+# work/ es intermedio salvo los modelos aprendidos de TRAIN, que sí se versionan
+work/*
+!work/party_model/
+!work/nonitem_model/
+!work/unident_model/
+!work/learn/
+work/learn/*.parquet
 .DS_Store
 /sample/
 /train/
