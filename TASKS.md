@@ -300,10 +300,14 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
   precisión global de pares no baja.
 
 ### T14 · Referencias ruidosas
-- **Dueño:** ouyang — módulo nuevo `src/refnoise` (filas `T14.*` en `side_links`, después de `src.fuzzref`); no toca
-  `src/fuzzref` ni `src/match`.
-- **Estado 14:49 (pendiente, el mayor hueco):** `ar_ref_noise` 82,7 % de exactitud por línea (83.717 líneas, ~14.500
-  falladas; pares P 96,9 / R 59,3). T3f (`src/fuzzref`) cubre parte; 99f09bd lo limita al top-3 de terceros.
+- **Dueño:** ouyang — `src/refnoise`, paso "unique amount (T14)" de `run_phase.sh` (tras `multiref`, antes de
+  `instrep`/`discombo`/`unident`); sólo reescribe filas sin partida de `allocations.parquet`.
+- **Estado 16:30 ✅ (hecho lo general; umbral de recall no alcanzado):** el hueco no es ruido de referencia: los cobros
+  que fallan no citan la factura. Dos reglas: `T14.unique_amount` (única factura abierta de los candidatos T4 con saldo
+  = cobro) y `T14.unique_combo` (única combinación de 2–3 facturas de un candidato = cobro). Ventana, cadena completa,
+  A/B en el mismo estado: 91,20 → 91,53 (+0,33; txn acc +0,76; P de pares 98,7 sin cambio). Diseñado en Q1, Q2–Q4 sin
+  mirar: importe único P 97,7 %, parejas 97–98 %, tríos 79–87 %. `ar_ref_noise` exactitud 90,3 → 91,3 %, pares
+  P 97,4 / R 76,3 (objetivo R 85): lo que queda son cobros de muchas facturas sin número → comb mitm (T3/T13).
 - **Problema:** `ar_ref_noise` R 49 % (184 k pares, el 21 % de las líneas).
 - **Hecho cuando:** casa números con 1 dígito cambiado o 2 transpuestos (distancia de Damerau 1 sobre `doc_digits`
   del tercero), truncados a 16/35/38 caracteres (prefijo ≥ 6 dígitos), sin prefijo o sin ceros; siempre restringido al
