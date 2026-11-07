@@ -138,7 +138,8 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
     # Populate the policy decision from grouped pair features. Keep rules auditable at row granularity.
     con.execute("""CREATE TEMP TABLE R AS SELECT *,
        CASE
-       WHEN coalesce(is_return_hint, false) OR reverse_direction THEN 'RETURNED'
+       WHEN reverse_direction OR (coalesce(is_return_hint, false) AND NOT normal_direction) THEN 'RETURNED'
+       -- a line that re-pays a returned collection ("RECIBO DEVUELTO …" in the normal direction) is a plain payment
        WHEN open_before_cents<=0 AND normal_direction THEN 'DUPLICATE_PAYMENT'
        WHEN is_fx AND kind IN ('ARI','API') AND fx_band THEN 'FX_DIFFERENCE'
        WHEN NOT is_fx AND kind='ARI' AND discount_ok THEN 'SHORT_DISCOUNT'
