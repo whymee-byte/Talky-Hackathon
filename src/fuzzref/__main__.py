@@ -19,7 +19,7 @@ import time
 
 import duckdb
 
-from src.common import REPO
+from src.common import REPO, safe_stdout
 
 PARTY_MIN = 0.2
 
@@ -121,6 +121,7 @@ def build(phase: str) -> None:
 
 
 def main():
+    safe_stdout()
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", required=True, choices=["sample", "window", "live", "final"])
     build(ap.parse_args().phase)
