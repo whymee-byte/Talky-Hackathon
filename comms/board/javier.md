@@ -7,3 +7,4 @@
 12:50 CLAIM T7 movimientos sin partida (src/nonitem/): tabla patrón→categoría aprendida de TRAIN + Naive Bayes por tokens para patrones nuevos; sin LLM (funciona sin red). Q1: 55,03 → 56,05. Toco sólo la rama line_category del matcher (guarda de tercero para UNIDENTIFIED cuando T7 no opina).
 12:55 DONE T7 ventana 52,84 → 53,87 (acc 60,3 → 62,9; macro-F1 36,5 → 37,8); nonitem_* 0 → ≈100 %, customer_refund/advance parciales (el resto los casa T3 con partida: p_item ≤ 0,5 en line_category podría vetarlos). Salida work/<fase>/line_category.parquet (sin red, sin LLM).
 12:59 CLAIM T9 preparación de FINAL (src/final/run_final.sh sin red + docs/FINAL_CHECKLIST.md); ensayo cronometrado con LIVE
+12:59 NOTE T7 en LIVE: 52,40 → 55,15 (fichero con T3 v3 + T7).
