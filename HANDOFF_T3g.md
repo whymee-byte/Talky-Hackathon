@@ -99,3 +99,11 @@ Cuello real: de ~5.000 cobros multi-factura sin casar, 1.156 tienen facturas del
 (2.311 facturas), 959 de ellas por T5.full_clear (P global 0,97, no se puede contestar a ciegas). Reasignación
 arbitrada contra reglas débiles (T3x.win, T3m.fill, fill_weak, overpayment): 76 ok / 10 mal, sólo 76 líneas → no
 compensa como etapa. El resto no tiene solución única por importe: hace falta el aviso de pago, que no existe.
+
+## 10. Medida sobre main fef4544 (el main de LIVE 94,03), ventana completa
+| ventana | score | Q2-Q4 |
+|---|---|---|
+| main + pocomb + delaycomb | 94,05 | 93,93 |
+| + tolpost (overfix + T3u) | **94,11** | **93,99** |
+| + T3g.ambig (quita full_clear ambiguo: línea multi-partida, sin referencia en texto, ≥2 facturas abiertas del mismo importe; 343 pares) | **94,12** | — |
+tolpost sigue sumando (+0,06) sobre el excfix nuevo; todo consistente fuera de muestra. LIVE en curso.
