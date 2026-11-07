@@ -17,3 +17,5 @@
 13:54 NOTE T2b: score ventana completo (side_links_ap + T3 v3 + T2 1-2 + T6 + T7) = 82,18 (aff5707, out/window_20261107-1353_aff5707.score.json). Pendiente: ap_confirming (17 % recall, 1 % de pares).
 14:00 DONE T6 avisos de pago (csv/xlsx/pdf/txt, maquetación sep-2025 incluida) + T3f referencias ruidosas + T5b excepciones: ventana 68,11 → 85,37; LIVE 71,55 → 86,32 (s_1fb602cfe9d11f127036). Pipeline completo: src/final/run_phase.sh <fase>
 14:07 DONE T10 side_links T2+T2b (src/sidemerge) + T3f v2: ventana 85,91; LIVE 86,78 (s_0dd54b3ced38f7dfdc72). PR #1 fusionado en main.
+14:20 NOTE main = v85 (64a7a88) + javier/remit-fuzzy-exceptions (d3b8ab5) fusionados (a91e239); ventana completa en curso para medir confirming T2b ±CONF_DAYS. LIVE 87,71 = puesto 10; líder 95,62.
+14:37 DONE T3 comb mitm: subconjuntos 2..16 facturas abiertas del tercero = cobro (meet-in-the-middle, solución única). Ventana 87,33 → 88,01 (alloc F1 92,25 → 93,05, acc 87,65 → 88,56; ar_ref_noise R 0,618 → 0,713, P 98,91 igual). 3.760 líneas, 21.303 pares.

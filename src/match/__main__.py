@@ -14,6 +14,7 @@ import argparse
 import os
 import time
 
+from src.match import combo
 from src.party.common import connect
 
 MONTHS = {1: "ENERO JANUARY JANVIER JANUAR GENNAIO JANEIRO STYCZEN", 2: "FEBRERO FEBRUARY FEVRIER FEBRUAR FEBBRAIO FEVEREIRO LUTY",
@@ -246,16 +247,17 @@ def build(phase):
            best AS (   -- smallest solution size wins; it must be unique at that size
              SELECT bank_txn_id, items, len(items) k FROM (SELECT * FROM s1 UNION ALL SELECT * FROM s2 UNION ALL SELECT * FROM s3)
              QUALIFY len(items) = min(len(items)) OVER (PARTITION BY bank_txn_id))
-      SELECT bank_txn_id, any_value(items) items, any_value(k) k FROM best GROUP BY 1 HAVING count(*) = 1""")
+      SELECT bank_txn_id, any_value(items) items, any_value(k) k, false AS mitm FROM best GROUP BY 1 HAVING count(*) = 1""")
     con.execute("DROP TABLE CI")
+    combo.add_solutions(con)     # larger subsets (meet in the middle), unique solutions only
     con.execute(f"""CREATE TABLE COMBP AS
-      WITH found AS (SELECT cs.bank_txn_id, unnest(cs.items) item_id, cs.k FROM CS cs),
-           base AS (SELECT r.bank_txn_id, r.item_id, cs.k FROM REFP r JOIN CS cs USING (bank_txn_id)),
-           allp AS (SELECT bank_txn_id, item_id, k, 'found' src FROM found UNION ALL SELECT bank_txn_id, item_id, k, 'base' FROM base)
+      WITH found AS (SELECT cs.bank_txn_id, unnest(cs.items) item_id, cs.k, cs.mitm FROM CS cs),
+           base AS (SELECT r.bank_txn_id, r.item_id, cs.k, cs.mitm FROM REFP r JOIN CS cs USING (bank_txn_id)),
+           allp AS (SELECT bank_txn_id, item_id, k, mitm, 'found' src FROM found UNION ALL SELECT bank_txn_id, item_id, k, mitm, 'base' FROM base)
       SELECT a.bank_txn_id, a.item_id, i.kind, i.party_id, i.issue_date, i.open_at_start_cents open_c,
              i.open_at_start_cents cash_i, false is_fx, i.open_at_start_cents amount_cents, '' exception,
-             'T3.comb.' || CASE WHEN cb.has_base THEN 'ref_plus_' ELSE 'party_' END || a.k AS rule,
-             coalesce(p.confidence, 0.9) * CASE a.k WHEN 1 THEN 0.9 WHEN 2 THEN 0.8 ELSE 0.7 END AS confidence,
+             'T3.comb.' || CASE WHEN cb.has_base THEN 'ref_plus_' ELSE 'party_' END || CASE WHEN a.mitm THEN 'mitm_' ELSE '' END || a.k AS rule,
+             coalesce(p.confidence, 0.9) * CASE WHEN a.mitm THEN 0.65 WHEN a.k = 1 THEN 0.9 WHEN a.k = 2 THEN 0.8 ELSE 0.7 END AS confidence,
              'subset of ' || a.k || ' item(s) = remainder ' || cb.rem || ' (' || a.src || ')' AS evidence
       FROM allp a JOIN CB cb USING (bank_txn_id) JOIN I i USING (item_id)
       LEFT JOIN P p ON p.bank_txn_id = a.bank_txn_id AND p.rank = 1""")
