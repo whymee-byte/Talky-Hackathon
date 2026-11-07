@@ -21,14 +21,14 @@ for f in work/window/line_party.parquet work/window/line_category.parquet work/w
   [[ -f $f ]] || { echo "missing $f: run src/final/run_phase.sh window once"; exit 1; }
 done
 # post-matcher steps, same order as src/final/run_phase.sh (refnoise = T14)
-POST="postfix pdffacts docrules excnorm multiref refnoise unident"
+POST="postfix pdffacts docrules excnorm multiref refnoise instrep discombo unident"
 case $FROM in
-  sidefiles)    STAGES="sidefiles sidemerge remit fuzzref match exceptions postfix pdffacts docrules excnorm multiref refnoise unident" ;;
-  sidefiles_ap) STAGES="sidefiles sidefiles_ap sidemerge remit fuzzref match exceptions postfix pdffacts docrules excnorm multiref refnoise unident" ;;
-  remit)        STAGES="remit fuzzref match exceptions postfix pdffacts docrules excnorm multiref refnoise unident" ;;
-  fuzzref)      STAGES="fuzzref match exceptions postfix pdffacts docrules excnorm multiref refnoise unident" ;;
-  match)        STAGES="match exceptions postfix pdffacts docrules excnorm multiref refnoise unident" ;;
-  exceptions)   STAGES="exceptions postfix pdffacts docrules excnorm multiref refnoise unident" ;;
+  sidefiles)    STAGES="sidefiles sidemerge remit fuzzref match exceptions postfix pdffacts docrules excnorm multiref refnoise instrep discombo unident" ;;
+  sidefiles_ap) STAGES="sidefiles sidefiles_ap sidemerge remit fuzzref match exceptions postfix pdffacts docrules excnorm multiref refnoise instrep discombo unident" ;;
+  remit)        STAGES="remit fuzzref match exceptions postfix pdffacts docrules excnorm multiref refnoise instrep discombo unident" ;;
+  fuzzref)      STAGES="fuzzref match exceptions postfix pdffacts docrules excnorm multiref refnoise instrep discombo unident" ;;
+  match)        STAGES="match exceptions postfix pdffacts docrules excnorm multiref refnoise instrep discombo unident" ;;
+  exceptions)   STAGES="exceptions postfix pdffacts docrules excnorm multiref refnoise instrep discombo unident" ;;
   post)         STAGES="$POST" ;;
   *) echo "unknown stage $FROM"; exit 1 ;;
 esac

@@ -39,6 +39,8 @@ step "pdf clauses"      $PY -u -m src.docrules --phase "$PHASE"
 step "exception norm"   $PY -u -m src.excnorm   --phase "$PHASE"
 step "multi-ref receipts" $PY -u -m src.multiref  --phase "$PHASE"
 step "unique amount (T14)" $PY -u -m src.refnoise --phase "$PHASE"
+step "repeated instalments (T17)" $PY -u -m src.instrep --phase "$PHASE"
+step "discount subsets (T18)" $PY -u -m src.discombo --phase "$PHASE"
 step "unidentified"     $PY -u -m src.unident     --phase "$PHASE"
 if [[ "$PHASE" == "window" || "$PHASE" == "sample" ]]; then
   step "write + score" $PY -u -m src.submit --phase "$PHASE" --from "work/$PHASE/allocations.parquet" --score
