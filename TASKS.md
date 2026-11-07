@@ -1,107 +1,143 @@
 # Tareas
 
-Cada tarea produce **un** fichero de `contracts/schemas.md` y se puede hacer en paralelo: si necesitas la salida de otra
-tarea que aún no está, usa su *mock desde golden* (descrito en el contrato). Apúntate escribiendo tu nombre en **Dueño**.
+Ordenadas por **puntos esperados** (estimación a partir de `docs/SCORING.md`; T1 es requisito de casi todo y va
+justo después de T0). Cada tarea vive en **su carpeta** `src/<módulo>/`, lee/escribe los ficheros de
+`contracts/schemas.md` y se puede hacer en paralelo usando el *mock desde golden* del contrato que necesite.
 
-Reglas comunes: duckdb/polars, nada de bucles fila a fila sobre millones de filas; código en `src/<modulo>/`, un
-comando por módulo (`python -m src.<modulo> --phase train|live|final`); salida en `work/<fase>/`.
-Evaluación honesta = **ventana de TRAIN 2024-07 → 2025-06** (con raw y PDFs en train-lite), saldos iniciales calculados
-del golden anterior (T9).
+Para coger una tarea: pon tu nombre en **Dueño**, escribe `CLAIM T<n>` en `comms/board/<tu-nombre>.md`, commit + push.
+Al acabar: `DONE T<n>` con la medida de "Verificar" pegada. Reglas completas en `CLAUDE.md`.
 
-> Existe un prototipo monolítico `src/recon.py` escrito antes de este plan (≈ 51,6 en `sample`, cifra no comparable con
-> la ventana). Sirve como referencia de reglas, no como base de código.
+Horario (web): datos FINAL **18:00** · cierre de envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main`
+y verificado a las **17:30** entra en el pipeline de FINAL.
 
-Horario: datos FINAL a las **18:00**, cierre de envíos **19:30**, entrega del proyecto **19:45**. Todo lo que esté listo a
-las 17:30 entra en el pipeline de FINAL.
+> `src/recon.py` es un prototipo monolítico anterior (≈ 51,6 en `sample`, no comparable con la ventana): úsalo como
+> referencia de reglas, no como base de código.
+
+| # | Tarea | Carpeta | Puntos esperados | Depende de (mock si no está) |
+|---|---|---|---|---|
+| T0 | Envío válido trivial + arnés de evaluación y envío | `src/submit/`, `tools/` | 10–19 (+ desbloquea todo) | — |
+| T1 | Base: movimientos, partidas, saldos de ventana | `src/base/` | habilita | — |
+| T2 | Ficheros de detalle (remesas, tarjetas, cheques, órdenes de pago) | `src/sidefiles/` | +20–30 | T1 |
+| T3 | Matcher con saldo vivo (tercero + referencia + importe) | `src/match/` | +15–20 | T1, T2, T4 |
+| T4 | Identificación de tercero | `src/party/` | (dentro de T3) | T1 |
+| T5 | Motor de excepciones e importes | `src/exceptions/` | +8–12 | `pairs_raw` (mock) |
+| T6 | Avisos de pago | `src/remit/` | +8–10 | T1 |
+| T7 | Movimientos sin partida (clasificador por patrón + LLM) | `src/nonitem/` | +3–5 | T1 |
+| T8 | Hechos de los PDFs | `src/pdffacts/` | +2–4 | T1 |
+| T9 | Drift y preparación de FINAL | `src/final/` | protege el único envío | todas |
 
 ---
 
-### T1 · Ingesta y normalización de movimientos
+### T0 · Envío válido trivial + arnés
 - **Dueño:**
-- **Produce:** `work/<fase>/lines.parquet` (contrato §1).
-- **Hecho cuando:** existe para `train`, `live` y `sample`; 1 fila por `bank_txn_id`; extrae `cp_name_norm`, `ibans`,
-  `mandate_ids`, `batch_refs`, `doc_tokens`, `month_hint` en los tres formatos (N43, MT940, camt) incluido el cambio de
-  Banco del Moncayo a camt en 2025-10.
-- **Verificar:** `count(*) = count(distinct bank_txn_id)` = nº de líneas de `bank_transactions`; sobre la ventana TRAIN,
-  % de pares del golden cuyo `doc_norm`/`doc_digits` aparece en `doc_tokens` ≥ el 22–25 % medido con búsqueda literal;
-  `cp_name_norm` no vacío en ≥ 90 % de transferencias recibidas; LIVE en < 2 min.
+- **Entradas:** `bank_transactions` de la fase; `allocations.parquet` cuando exista.
+- **Salidas:** `out/<fase>_<yyyymmdd-hhmm>_<sha>.csv.gz`, `out/<…>.score.json`; `tools/validate.py`, `tools/score.py`,
+  `tools/submit.py` (envoltorio del script oficial de `/enviar`, token en `HK_TOKEN`).
+- **Hecho cuando:** (1) existe un fichero LIVE válido con **todas** las líneas: pares exactos del starter + resto
+  `UNIDENTIFIED/UNIDENTIFIED` (cobros) o `BANK_FEES` (pagos); (2) `validate.py` reproduce todas las reglas de
+  `FORMAT.md` con nº de fila; (3) `score.py` puntúa `sample` y la ventana con `starter/bankrec_score.py` y desglosa por
+  métrica y segmento; (4) el primer envío LIVE está hecho **tras confirmar** en `SUBMISSIONS.md`.
+- **Verificar:** un fichero roto a propósito falla con nº de fila; el del starter puntúa igual con `score.py` y con
+  `starter/score_train.py`; la nota LIVE queda apuntada en `SUBMISSIONS.md`.
 
-### T2 · Partidas, saldos iniciales y arnés de ventana
+### T1 · Base: movimientos, partidas y saldos de ventana
 - **Dueño:**
-- **Produce:** `work/<fase>/items.parquet` (contrato §2) y `work/train_window/items.parquet` con saldos al 2024-07-01.
-- **Hecho cuando:** une AR, AP y abonos (+ `open_items_at_start` en LIVE/FINAL, + `masters_final` en FINAL); trae
-  condiciones de pago con % y días de descuento; saldo de ventana = total − asignado por el golden antes de 2024-07-01
-  (sumando `RETURNED`, a 0 si la excepción liquida entera).
-- **Verificar:** en LIVE, `sum(open_at_start)` por tipo = `open_items_at_start` (ARI 1.116,1 M, API 560,2 M,
-  ARC 57,3 M, APC 6,3 M); en la ventana, ≥ 99 % de los pares del golden apuntan a partidas con saldo > 0 en el momento.
+- **Salidas:** `work/<fase>/lines.parquet` (§1), `work/<fase>/items.parquet` (§2) para `sample`, `window`, `live`
+  (y `final` cuando salga).
+- **Hecho cuando:** 1 fila por `bank_txn_id`; extrae `cp_name_norm`, `ibans`, `mandate_ids`, `batch_refs`, `doc_tokens`,
+  `month_hint`, `is_return_hint` en N43, MT940 y camt (incluido Moncayo camt desde 2025-10); partidas AR+AP+abonos con
+  condiciones de pago, `open_items_at_start` en LIVE/FINAL; ventana con saldo = total − asignado por el golden antes de
+  2024-07-01 (sumando `RETURNED`; 0 si la excepción liquida entera).
+- **Verificar:** `count(*) = count(distinct bank_txn_id)` = líneas de la fase; % de pares del golden cuyo `doc_norm`
+  está en `doc_tokens` ≥ 21,8 % (búsqueda literal medida); `cp_name_norm` no vacío en ≥ 90 % de cobros por
+  transferencia; en LIVE `sum(open_at_start)` por tipo = `open_items_at_start`; en la ventana ≥ 99 % de pares del golden
+  apuntan a partidas con saldo > 0; LIVE en < 2 min.
 
-### T3 · Ficheros de detalle: remesas SEPA, devoluciones, tarjetas, cheques, órdenes de pago
+### T2 · Ficheros de detalle
 - **Dueño:**
-- **Produce:** `work/<fase>/side_links.parquet` (contrato §3).
-- **Hecho cuando:** enlaza cada movimiento de lote con todas sus partidas (remesa SEPA por `batch_id`, devoluciones por
-  mandato + remesa, tarjeta por comercio/fecha/neto, cheques por `deposit_id`, `payment_runs` por e2e / run / fecha de
-  vencimiento de confirming, incluido payment factory ES00 → ES01/ES02/PT01); importes de tarjeta en **bruto**.
-- **Verificar:** en la ventana, precisión ≥ 98 % y recall ≥ 95 % de pares en los segmentos `ar_dd_batch`,
-  `ar_dd_returned`, `ar_card_settlement`, `ar_cheque_deposit`, `ap_payment_multi`, `ap_payment_single`, `ap_confirming`,
-  `ap_paid_by_holding`, `ap_credit_note_netted`, `ap_direct_debit`. Estos segmentos son ≈ 37 % de los pares del golden.
+- **Salida:** `work/<fase>/side_links.parquet` (§3).
+- **Hecho cuando:** enlaza cada movimiento de lote con todas sus partidas: remesa SEPA/BACS/ACH por `batch_id`,
+  devoluciones por mandato + remesa (`RETURNED`), tarjeta por comercio/fecha/neto (importe **bruto** por pedido),
+  cheques por `deposit_id`, `payment_runs` por e2e / run / vencimiento de confirming, incluida la payment factory
+  ES00 → ES01/ES02/PT01 y abonos netos.
+- **Verificar:** en la ventana, precisión ≥ 98 % y recall ≥ 95 % de pares en `ar_dd_batch`, `ar_dd_returned`,
+  `ar_card_settlement`, `ar_cheque_deposit`, `ap_payment_multi`, `ap_payment_single`, `ap_confirming`,
+  `ap_paid_by_holding`, `ap_credit_note_netted`, `ap_direct_debit` (≈ 37 % de los pares).
+
+### T3 · Matcher con saldo vivo
+- **Dueño:**
+- **Entradas:** `lines`, `items`, `side_links`, `line_party`, `remit_lines`, `doc_facts`, `line_category` (mocks del
+  golden mientras no existan).
+- **Salida:** `work/<fase>/pairs_raw.parquet` (§7b).
+- **Hecho cuando:** procesa por fecha de cargo llevando el saldo de cada partida (vectorizado por día/tercero, no fila a
+  fila); prioridad `side_links` → avisos → referencia de documento → tercero + importe (exacto, subset-sum con abonos,
+  FIFO, mes de servicio, factura sustituta) → sin partida; si no hay candidato seguro, **abstiene** (la línea queda
+  para T7 / `UNIDENTIFIED`).
+- **Verificar:** con **todos** los mocks del golden, score de ventana ≥ 90 (techo); con módulos reales, mejora sobre
+  la heurística de referencia (≈ 61); tabla por segmento en el PR; precisión de pares ≥ 97 %.
 
 ### T4 · Identificación de tercero
 - **Dueño:**
-- **Produce:** `work/<fase>/line_party.parquet` (contrato §4).
-- **Hecho cuando:** combina IBAN (maestro + **IBAN aprendidos en TRAIN** + avisos de cambio de IBAN), mandato, nombre
-  (truncado, nombre comercial, renombrados), pagador por cuenta de otro (matriz/grupo, confirming "ORD. …", agencia
-  "EXPTE …") e historial.
-- **Verificar:** en la ventana, top-1 acierta el tercero del golden en ≥ 95 % de las líneas con partida y top-3 en ≥ 98 %;
-  desglose por formato (N43 / MT940 / camt) y en `ar_third_party_*`, `ar_new_iban`.
+- **Salida:** `work/<fase>/line_party.parquet` (§4).
+- **Hecho cuando:** combina IBAN (maestro + IBANs aprendidos en TRAIN + avisos de cambio de IBAN), mandato, nombre
+  (truncado, comercial, renombrados), pagador por cuenta de otro (matriz/grupo, confirming "ORD. …", agencia "EXPTE …")
+  e historial; hasta 3 candidatos con `rule/confidence/evidence`.
+- **Verificar:** en la ventana, top-1 = tercero del golden en ≥ 95 % de las líneas con partida, top-3 ≥ 98 %; desglose
+  por formato (N43/MT940/camt) y en `ar_third_party_*`, `ar_new_iban`.
 
-### T5 · Avisos de pago (remittance advices)
+### T5 · Motor de excepciones e importes
 - **Dueño:**
-- **Produce:** `work/<fase>/remit_lines.parquet` (contrato §5).
-- **Hecho cuando:** parsea los 4 formatos (pdf 16,7 k, csv 18,9 k, txt 13 k, xlsx 2,4 k en TRAIN) y el cambio de
-  formato del gran cliente en sep-2025; resuelve referencias del cliente a `item_id`; captura deducciones y su motivo.
-- **Verificar:** ≥ 95 % de líneas de aviso con `item_id` resuelto en la ventana; con los avisos, recall de pares
-  ≥ 95 % en `ar_1toN_remittance` y `ar_short_dispute` (≈ 20 % de los pares del golden) y excepción correcta en
-  `SHORT_DISPUTE`; prueba en LIVE de que el nuevo formato sale (nº de avisos por mes sin caída en sep-2025).
+- **Entrada:** `pairs_raw.parquet` (§7b) — empezar con el mock del golden. **Salida:** `allocations.parquet` (§8).
+- **Hecho cuando:** implementa `POLICIES.md` §2–3 como reglas generales: `FX_DIFFERENCE` (divisa distinta, banda
+  ≤ 3 %, reemplaza `SHORT_*`/vacío, abonos sin excepción), `SHORT_DISCOUNT` (términos + fecha ≤ emisión + días + 3 +
+  importe = total − % × total), `SHORT_WITHHOLDING` (1,25/1,5/10 % y país), `SHORT_BANK_CHARGES` (no SEPA, ≤ 60 € y
+  ≤ 2 %), `OVERPAYMENT`, `DUPLICATE_PAYMENT` (saldo previo 0), `PARTIAL` (incluido descuento fuera de plazo, plazos,
+  retención, anticipo), `SHORT_DISPUTE` (motivo en aviso), `RETURNED`; importe = saldo completo o lo pagado según §2.
+- **Verificar:** sobre el mock de la ventana, F1 por clase ≥ 0,95 en las 10 clases y transaction accuracy de las líneas
+  con partida ≥ 97 %; tabla F1 por clase en el PR.
 
-### T6 · Clasificador de movimientos sin partida
+### T6 · Avisos de pago
 - **Dueño:**
-- **Produce:** `work/<fase>/line_category.parquet` (contrato §6).
-- **Hecho cuando:** predice `p_item` y categoría (21 clases) con texto, códigos bancarios y signo; trata a `BANK_REVERSAL`
-  (ambas patas), `CASH_POOL`, `INTERNAL_TRANSFER`, `INTERCOMPANY`, `FX_DEAL`; sabe que `UNIDENTIFIED` sólo se decide
-  después del matcher.
-- **Verificar:** en la ventana, exactitud de categoría ≥ 98 % sobre líneas sin partida (excluido `UNIDENTIFIED`) y
-  AUC de `p_item` ≥ 0,99; matriz de confusión por categoría en el PR.
+- **Salida:** `work/<fase>/remit_lines.parquet` (§5).
+- **Hecho cuando:** parsea pdf/csv/xlsx/txt (también el cambio de formato del gran cliente en sep-2025); resuelve la
+  referencia del cliente a `item_id` (sin prefijo, nº de pedido, nº antiguo); captura deducción y motivo. LLM sólo para
+  inferir la **plantilla** de cada maquetación nueva (una llamada por maquetación, en caché), nunca por aviso.
+- **Verificar:** ≥ 95 % de líneas de aviso con `item_id` en la ventana; con avisos, recall de pares ≥ 95 % en
+  `ar_1toN_remittance` y `ar_short_dispute`; nº de avisos parseados por mes en LIVE sin caída en sep-2025.
 
-### T7 · Hechos de los PDFs
+### T7 · Movimientos sin partida
 - **Dueño:**
-- **Produce:** `work/<fase>/doc_facts.parquet` (contrato §7).
-- **Hecho cuando:** extrae plazos, retención de garantía, anticipo a deducir, "anula y sustituye", mes de servicio,
-  rappel compensado/pagado, abono reembolsado/compensado, factoring, nuevo IBAN (ES/FR/DE/EN…).
-- **Verificar:** en la ventana, las partidas de `ar_instalment`, `ar_retention`, `ar_advance_deduction`,
-  `ar_replaced_invoice`, `ar_same_amount_month`, `ar_new_iban` tienen el hecho correspondiente en ≥ 90 % de los casos;
-  muestra de 20 PDFs revisados a mano sin falsos positivos.
+- **Salida:** `work/<fase>/line_category.parquet` (§6).
+- **Hecho cuando:** normaliza el texto a patrón (sin dígitos/ids/fechas) + `bank_code` + signo; tabla patrón →
+  categoría aprendida en TRAIN; patrones nuevos (camt de Moncayo, ZA01) por LLM **una llamada por patrón** con caché;
+  `BANK_REVERSAL` en ambas patas; `UNIDENTIFIED` sólo lo pone T3/T5 cuando no hay partida posible.
+- **Verificar:** en la ventana, exactitud de categoría ≥ 98 % en líneas sin partida (excluido `UNIDENTIFIED`); nº de
+  patrones LIVE sin categoría = 0; nº de llamadas LLM ≤ nº de patrones nuevos.
 
-### T8 · Matcher, asignación y excepciones
+### T8 · Hechos de los PDFs
 - **Dueño:**
-- **Produce:** `work/<fase>/allocations.parquet` (contrato §8).
-- **Hecho cuando:** recorre los movimientos **en orden de fecha** llevando saldos; prioriza `side_links` → avisos →
-  referencias → tercero + importe (FIFO, subset-sum con abonos, mes de servicio) → `UNIDENTIFIED`/categoría; aplica
-  `POLICIES.md` §2–3 (importe y excepción por fila, incluidas FX y duplicados); funciona con mocks de T3–T7.
-- **Verificar:** en la ventana con **todos los mocks del golden**, score ≥ 90 (techo del matcher); con los módulos reales,
-  mejora sobre la heurística de referencia (≈ 61). Tabla por segmento en el PR.
+- **Salida:** `work/<fase>/doc_facts.parquet` (§7).
+- **Hecho cuando:** extrae plazos, retención, anticipo a deducir, "anula y sustituye", mes de servicio, rappel
+  compensado/pagado, abono reembolsado/compensado, factoring, nuevo IBAN (ES/FR/DE/EN…); regex primero, LLM sólo por
+  plantilla de PDF desconocida.
+- **Verificar:** en la ventana, ≥ 90 % de las partidas de `ar_instalment`, `ar_retention`, `ar_advance_deduction`,
+  `ar_replaced_invoice`, `ar_same_amount_month`, `ar_new_iban` tienen su hecho; 20 PDFs revisados a mano sin falsos
+  positivos.
 
-### T9 · Escritor, validador, evaluación y envío
+### T9 · Drift y preparación de FINAL
 - **Dueño:**
-- **Produce:** `out/<fase>_….csv.gz` + `score.json`; script `make submit-check`.
-- **Hecho cuando:** serializa `allocations` con el formato de `FORMAT.md`, valida todas las reglas (líneas cubiertas, sin
-  pares repetidos, categoría/excepción en lista, ≤ 60 MB y ≤ 3 M filas), puntúa la ventana con
-  `starter/bankrec_score.py` y desglosa por segmento y por métrica; checklist de FINAL (un solo envío).
-- **Verificar:** el fichero del starter puntúa igual que con `starter/score_train.py`; un fichero roto a propósito falla
-  con nº de fila; ejecución completa LIVE de punta a punta en < 10 min.
+- **Salida:** `src/final/run_final.sh` (un comando de punta a punta), `docs/FINAL_CHECKLIST.md`.
+- **Hecho cuando:** el pipeline completo corre en LIVE en < 15 min; informe por mes de LIVE (cobertura de pares,
+  % sin partida, % `UNIDENTIFIED`) sin caídas en 2025-09 (avisos) ni 2025-10 (Moncayo camt); maneja entidades/cuentas
+  no presentes en `masters/` (ZA01 ya aparece en LIVE) y `final/masters_final/`; simulacro de FINAL con LIVE a las 17:00.
+- **Verificar:** ensayo cronometrado; el fichero pasa `validate.py`; checklist firmado por el responsable antes de
+  subir el único envío FINAL.
 
 ---
 
-## Orden recomendado si hay poca gente
+## Reparto sugerido (3–4 personas)
 
-T9 y T2 primero (sin arnés no se puede medir), luego T3 (pares baratos y seguros) y T8; T4, T5 y T6 en paralelo; T7 al
-final. Cada mejora se mide en la ventana antes de gastar un envío LIVE.
+- **Persona A:** T0 → T5 (arnés y excepciones: puntos rápidos y medibles).
+- **Persona B:** T1 → T2 (base y lotes: el mayor bloque de pares).
+- **Persona C:** T4 → T3 (tercero y matcher).
+- **Persona D (o la primera que acabe):** T7 → T6 → T8; T9 a partir de las 16:00 con quien esté libre.

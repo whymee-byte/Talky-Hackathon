@@ -87,8 +87,47 @@ Las reglas exactas están en `POLICIES.md`: las etiquetas las siguen al pie de l
 | Fase | Periodo | Movimientos | Tenemos respuestas | Uso |
 |---|---|---|---|---|
 | TRAIN | 2021-07 → 2025-06 | 1,49 M | sí (`golden_allocations`) | aprender y **autoevaluarnos** |
-| LIVE | 2025-07 → 2025-12 | 203 k | no | clasificación pública, envíos ilimitados (1 cada 3 min, 20/día) |
+| LIVE | 2025-07 → 2025-12 | 203 k | no | clasificación pública; 1 envío / 10 s, cuenta el mejor |
 | FINAL | 2026-01 → 2026-06 | 220 k | no | **un solo envío**, sale a las 18:00, cierre 19:30 |
+
+## Volúmenes (medidos, `explore/PROFILE.md`)
+
+| | TRAIN | LIVE |
+|---|---|---|
+| movimientos | 1.489.931 | 203.083 |
+| facturas AR / AP / abonos | 3,96 M / 1,53 M / 150 k | 487 k / 199 k / 19,5 k |
+| partidas abiertas al inicio | — | 325.419 (1.740 M) |
+| filas de remesas SEPA / tarjetas / cheques / órdenes de pago | 714 k / 148 k / 42 k / 1,42 M | 94 k / 19 k / 6 k / 206 k |
+| avisos de pago / PDFs (ficheros) | 13,4 k / 33,2 k | 6,9 k / 16,7 k |
+| formato del extracto (camt / MT940 / N43) | 49 / 29 / 21 % | 52 / 29 / 19 % |
+
+Claves de unión: `bank_txn_id` (movimiento ↔ golden ↔ entrega); `item_id` (golden/entrega ↔ facturas y abonos; el
+100 % de los `item_id` del golden existe en las tablas de partidas); `account_id` (movimiento ↔ `bank_accounts` ↔
+ficheros de lote); `batch_id`/`end_to_end_id`/`deposit_id`/`settlement_id`/`run_id` (texto del banco ↔ ficheros de
+detalle); `customer_id`/`supplier_id`/`party_id` (partida ↔ maestros); `document_number` (texto, avisos, PDFs ↔ partida).
+Sólo el 2,3 % de los pares cruza divisa (FX) y el 2,1 % cruza sociedad (payment factory ES00).
+
+**Patrones de texto** (quitando dígitos/ids): las líneas **sin partida** (excepto `UNIDENTIFIED`, `CUSTOMER_REFUND`,
+`CUSTOMER_ADVANCE`, `SUPPLIER_REFUND`) caben en **< 200 patrones** (p. ej. `BANK_FEES` 70 k líneas = 14 patrones,
+`CASH_POOL` 12,6 k = 5). Los cobros son muy variados (64 k–96 k patrones por formato) porque llevan el nombre del
+pagador. → clasificar sin-partida por patrón es barato; los cobros se casan con tercero + importe.
+
+**Rarezas encontradas:** 2 movimientos de **ZA01** (cuenta `ZA01-UMVC-ZAR`, ZAR) ya en LIVE (29–30 dic 2025), que no
+están en `masters/` (ni la sociedad ni la cuenta): son cobros de proforma (→ `CUSTOMER_ADVANCE`). Banco del Moncayo
+cambia a camt exactamente el 2025-10-01 en sus 4 cuentas. 26 líneas TRAIN / 5 LIVE sin texto. Sin duplicados de id,
+ni importes 0, ni fechas valor raras.
+
+## Errores que cuestan puntos
+
+| Error | Qué pierde |
+|---|---|
+| Casar un cobro a una factura parecida que no es | 1 par falso (precisión F1) + la línea mal + quizás un FP de excepción. Peor que no casar. |
+| Casar la factura correcta con importe mal (p. ej. lo cobrado en vez del saldo completo en `SHORT_DISCOUNT`/`FX_DIFFERENCE`) | el par no cuenta (F1) y la línea está mal |
+| Poner la excepción equivocada o ninguna | la línea está mal (accuracy) y la clase pierde F1 |
+| Dejar sin marcar una clase entera (p. ej. nunca emitir `OVERPAYMENT`) | ≈ 2 puntos |
+| Olvidar líneas de la fase | cada una cuenta como fallo |
+| Casar una partida ya liquidada sin marcar `DUPLICATE_PAYMENT` | par probablemente falso; hay que llevar saldos |
+| Usar un `item_id` de una factura anulada ("anula y sustituye") | par falso: se liquida la sustituta |
 
 ## Glosario rápido
 

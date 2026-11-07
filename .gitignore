@@ -4,3 +4,5 @@ out/
 *.csv.gz
 __pycache__/
 .env
+data_cache/
+work/
