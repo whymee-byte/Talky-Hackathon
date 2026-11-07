@@ -18,7 +18,7 @@ Reglas (ids estables):
 Fila de run → partida: nº de documento compacto + divisa + tipo (abono si importe < 0) + sociedad del fichero
 (o filial pagada por la payment factory) + proveedor (beneficiario por nombre/IBAN en suppliers.csv).
 Documento que paga menos que el saldo vivo → PARTIAL (importe pagado); divisa de la partida ≠ divisa de la cuenta →
-FX_DIFFERENCE con el saldo completo; partida ya liquidada (saldo 0) → DUPLICATE_PAYMENT.
+FX_DIFFERENCE con el saldo completo.
 """
 from __future__ import annotations
 
@@ -90,6 +90,7 @@ def build(phase: str, data: str | None = None, steps: list[str] | None = None, o
 
     # ------------------------------------------------------------------ base
     con.sql(f"""create table L as select bank_txn_id, account_id, entity, booking_date, amount_cents, abs(amount_cents) abs_cents,
+                abs(orig_amount_cents) orig_amount_cents, is_return_hint,
                 currency, direction, text_norm, {compact('text_norm')} txt_c, statement_format
                 from '{work}/lines.parquet'""")
     d_min, d_max = con.sql("select min(booking_date), max(booking_date) from L").fetchall()[0]
@@ -116,39 +117,49 @@ def build(phase: str, data: str | None = None, steps: list[str] | None = None, o
           from {pr_csv}
           where execution_date::date between DATE '{d_min}' - {CONF_DAYS} and DATE '{d_max}' + {DAYS_BEFORE}""")
         # fila → partida: documento + divisa + tipo + sociedad (fichero o filial de la payment factory) + proveedor
-        con.sql(f"""create table PRI as
-          select * from (
+        con.sql(f"""create table PRC as
             select p.*, i.item_id, i.kind, i.entity ient, i.party_id, i.total_cents, i.open_c, i.issue_date, i.due_date,
                    coalesce(s.supplier_id = i.party_id, false) sup_name,
                    coalesce(si.supplier_id = i.party_id, false) sup_iban,
-                   row_number() over (partition by p.run_id, p.e2e, p.doc_c, p.doc_cents order by
-                       coalesce(s.supplier_id = i.party_id, false) desc, coalesce(si.supplier_id = i.party_id, false) desc,
-                       (abs(p.doc_cents) = i.total_cents) desc, (i.open_c > 0) desc, (i.issue_date <= p.d) desc, i.issue_date desc, i.item_id) rn,
                    count(*) over (partition by p.run_id, p.e2e, p.doc_c, p.doc_cents) ncand
             from PR p
             join I i on i.doc_c = p.doc_c and i.currency = p.currency and i.kind = case when p.doc_cents < 0 then 'APC' else 'API' end
             left join SUP s on s.name_c = p.ben_c and s.entity = i.entity
             left join SUP si on si.iban = p.iban and si.entity = i.entity
-            where i.entity = p.fent or {fact})
-          where rn = 1 and (sup_name or sup_iban or ncand = 1 or abs(doc_cents) = total_cents)""")
+            where i.entity = p.fent or {fact}""")
+        # proveedor del e2e: el que resuelven nombre/IBAN o, si no (factor, renombrado), el único candidato de sus filas
+        con.sql("""create table E2P as
+            select run_id, e2e, party_id, ient from (
+              select run_id, e2e, party_id, ient, count(*) n, row_number() over (partition by run_id, e2e order by count(*) desc) rn
+              from PRC where sup_name or sup_iban or ncand = 1 group by 1, 2, 3, 4) where rn = 1""")
+        con.sql("""create table PRI as
+          select * from (
+            select c.*, coalesce(c.party_id = e.party_id and c.ient = e.ient, false) sup_e2e,
+                   row_number() over (partition by c.run_id, c.e2e, c.doc_c, c.doc_cents order by
+                       c.sup_name desc, c.sup_iban desc, coalesce(c.party_id = e.party_id and c.ient = e.ient, false) desc,
+                       (abs(c.doc_cents) = c.total_cents) desc, (c.open_c > 0) desc, (c.issue_date <= c.d) desc, c.issue_date desc, c.item_id) rn
+            from PRC c left join E2P e using (run_id, e2e))
+          where rn = 1 and (sup_name or sup_iban or sup_e2e or ncand = 1 or abs(doc_cents) = total_cents)""")
         stats["pr_rows"] = con.sql("select count(*) from PR").fetchall()[0][0]
         stats["pr_rows_item"] = con.sql("select count(*) from PRI").fetchall()[0][0]
 
         # unidades de cargo: e2e (transfers, confirming) y run (aggregated)
         con.sql("""create table U as
-          select 'e2e' ukind, run_id, e2e ukey, e2e_c key_c, acct, d, any_value(t_cents) cents, run_type
+          select 'e2e' ukind, run_id, e2e ukey, e2e_c key_c, acct, d, any_value(t_cents) cents, run_type, any_value(ben_c) ben_c
           from PR where run_type <> 'aggregated' group by all
           union all
-          select 'run', run_id, run_id, run_id, acct, d, sum(t_cents), run_type
+          select 'run', run_id, run_id, run_id, acct, d, sum(t_cents), run_type, null
           from (select distinct run_id, acct, d, e2e, t_cents, run_type from PR where run_type = 'aggregated') group by all""")
         # enlace unidad → línea OUT de la cuenta (prioridad: id en texto > run + importe > importe + fecha)
         con.sql(f"""create table UL as
           with c as (
             select u.*, l.bank_txn_id, l.booking_date, l.currency lcur, abs(l.booking_date - u.d) dd,
-                   contains(l.txt_c, u.key_c) key_in, contains(l.txt_c, u.run_id) run_in, l.abs_cents = u.cents amt_eq
+                   contains(l.txt_c, u.key_c) key_in, contains(l.txt_c, u.run_id) run_in,
+                   l.abs_cents = u.cents or l.orig_amount_cents = u.cents amt_eq
             from U u join L l on l.account_id = u.acct and l.direction = 'OUT'
                  and l.booking_date between u.d - {DAYS_BEFORE} and u.d + {DAYS_AFTER}
-            where u.run_type <> 'confirming' and (contains(l.txt_c, u.key_c) or (contains(l.txt_c, u.run_id) and l.abs_cents = u.cents)
+            where u.run_type <> 'confirming' and (contains(l.txt_c, u.key_c)
+                   or (contains(l.txt_c, u.run_id) and (l.abs_cents = u.cents or l.orig_amount_cents = u.cents))
                    or (l.abs_cents = u.cents and abs(l.booking_date - u.d) <= {DAYS_AMT})))
           select *, case when key_in and amt_eq then 1.0 when key_in then 0.98 when run_in then 0.97 else 0.9 end conf,
                  case when key_in then 'key_in_text' when run_in then 'run_in_text+amount' else 'acct+amount+date' end how
@@ -169,11 +180,15 @@ def build(phase: str, data: str | None = None, steps: list[str] | None = None, o
         # transferencia rechazada: abono (IN) con el e2e (o run + importe) en el texto y el importe de la transferencia
         con.sql(f"""create table RL as
           select u.*, l.bank_txn_id, l.booking_date, l.currency lcur, abs(l.booking_date - u.d) dd, true key_in, true run_in, true amt_eq,
-                 1.0 conf, 'return:e2e_in_text+amount' how
+                 case when contains(l.txt_c, u.key_c) then 1.0 when contains(l.txt_c, u.run_id) then 0.98 else 0.9 end conf,
+                 case when contains(l.txt_c, u.key_c) then 'return:e2e_in_text+amount' when contains(l.txt_c, u.run_id) then 'return:run_in_text+amount'
+                      else 'return:hint+beneficiary+amount' end how
           from U u join L l on l.account_id = u.acct and l.direction = 'IN' and l.abs_cents = u.cents
                and l.booking_date between u.d and u.d + {RET_DAYS}
-          where u.ukind = 'e2e' and (contains(l.txt_c, u.key_c) or contains(l.txt_c, u.run_id))
-          qualify row_number() over (partition by bank_txn_id order by contains(l.txt_c, u.key_c) desc, dd) = 1""")
+          where u.ukind = 'e2e' and (contains(l.txt_c, u.key_c) or contains(l.txt_c, u.run_id)
+                 or (l.is_return_hint and length(u.ben_c) >= 8 and contains(l.txt_c, left(u.ben_c, 10))))
+          qualify row_number() over (partition by bank_txn_id order by contains(l.txt_c, u.key_c) desc, contains(l.txt_c, u.run_id) desc, dd) = 1
+            and count(*) over (partition by bank_txn_id, contains(l.txt_c, u.key_c) or contains(l.txt_c, u.run_id)) = 1""")
         emit_run_pairs(con, "RL", "'T2b.run_return'", "r.e2e = u.ukey", returned=True)
         stats["ret_pairs"] = con.sql("select count(*) from OUT where rule = 'T2b.run_return'").fetchall()[0][0]
 
@@ -297,13 +312,14 @@ def emit_run_pairs(con, links: str, rule_sql: str, join_sql: str, returned: bool
     """Pares de las unidades enlazadas: documento → partida, importe y excepción (POLICIES §2-3)."""
     exc = ("'RETURNED'" if returned else
            """case when r.kind = 'APC' then ''
-                   when r.open_c <= 0 then 'DUPLICATE_PAYMENT'
+                   -- saldo ya a 0 (devuelta y repagada, o liquidada fuera de los runs): se paga el documento, sin excepción
+                   when r.remaining <= greatest(1, 0.005 * r.doc_cents) then ''
                    when r.doc_cents < r.remaining - greatest(1, 0.005 * r.remaining) then 'PARTIAL'
                    when r.currency <> r.lcur then 'FX_DIFFERENCE'
                    else '' end""")
     amt = ("abs(r.doc_cents)" if returned else
            """case when r.kind = 'APC' then abs(r.doc_cents)
-                   when r.open_c <= 0 then r.doc_cents
+                   when r.remaining <= greatest(1, 0.005 * r.doc_cents) then r.doc_cents
                    when r.doc_cents < r.remaining - greatest(1, 0.005 * r.remaining) then r.doc_cents
                    else greatest(r.doc_cents, r.remaining) end""")
     con.sql(f"""insert into OUT
@@ -315,7 +331,7 @@ def emit_run_pairs(con, links: str, rule_sql: str, join_sql: str, returned: bool
         from {links} u join PRI p on p.acct = u.acct and ({join_sql.replace('r.', 'p.')}))
       select r.bank_txn_id, r.item_id, {amt}, {exc}, {rule_sql}, r.ukey, r.conf,
              'run=' || r.run_id || '; e2e=' || r.e2e || '; ' || r.how || '; doc=' || r.doc || '; doc_amt=' || r.doc_cents
-             || '; open=' || r.open_c || '; remaining=' || r.remaining || '; sup=' || case when r.sup_name then 'name' when r.sup_iban then 'iban' else 'none' end
+             || '; open=' || r.open_c || '; remaining=' || r.remaining || '; sup=' || case when r.sup_name then 'name' when r.sup_iban then 'iban' when r.sup_e2e then 'e2e' else 'none' end
       from r""")
 
 
@@ -324,6 +340,7 @@ def link_confirming(con) -> None:
     pagos suman el cargo. Se asignan en orden cronológico: k = 1 → el e2e con ese importe aún no cargado; k > 1 →
     búsqueda de la combinación de k e2e pendientes que suma el cargo (en Python por remesa, pocas decenas de e2e)."""
     import itertools
+    from datetime import timedelta
 
     con.sql("""create table CFU as
       select run_id, acct, e2e, any_value(cents) cents, max(due_date) mx from
@@ -344,7 +361,7 @@ def link_confirming(con) -> None:
         pending = {e: (c, mx) for e, c, mx in units}
         for bt, bd, amt, k in charges:
             k = k or 1
-            cand = [(e, c) for e, (c, mx) in pending.items() if mx is None or mx <= bd + 3]
+            cand = [(e, c) for e, (c, mx) in pending.items() if mx is None or mx <= bd + timedelta(days=3)]
             found = None
             if k == 1:
                 hits = [e for e, c in cand if c == amt]
