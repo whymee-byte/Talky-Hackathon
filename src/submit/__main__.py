@@ -44,7 +44,7 @@ def load_items(phase: str, data: str | None):
     totals, by_number = {}, defaultdict(list)
     for src in PHASE_ITEM_SOURCES[phase]:
         for name, numcol in ITEM_TABLES:
-            p = os.path.join(root, src, f"{name}.csv.gz")
+            p = os.path.join(phase_dir(src, root), f"{name}.csv.gz")
             if not os.path.exists(p):
                 continue
             for r in read_csv(p):

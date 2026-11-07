@@ -38,7 +38,13 @@ def data_root(explicit: str | None = None) -> str:
 
 def phase_dir(phase: str, root: str | None = None) -> str:
     """Folder with the phase inputs. `window` reads from train/."""
-    return os.path.join(data_root(root), "train" if phase == "window" else phase)
+    name = "train" if phase == "window" else phase
+    primary = os.path.join(data_root(root), name)
+    if os.path.isdir(primary):
+        return primary
+    # phase folders extracted next to the repo root (e.g. ./live/) are accepted too
+    alt = os.path.join(REPO, name)
+    return alt if os.path.isdir(alt) else primary
 
 
 def categories(root: str | None = None) -> list[str]:
