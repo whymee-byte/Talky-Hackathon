@@ -62,6 +62,42 @@ def build(phase: str) -> None:
         con.execute("DELETE FROM A WHERE item_id IS NULL AND bank_txn_id IN (SELECT bank_txn_id FROM FILL)")
         con.execute("INSERT INTO A BY NAME SELECT * FROM FILL")
         print("fill_ref:", con.sql("SELECT count(DISTINCT bank_txn_id), count(*) FROM FILL").fetchall())
+    # dup_amt / over_amt: receipts still without item whose likely party (T4 >= 0.5) has exactly one invoice that
+    #   dup_amt  : was already fully applied by an earlier line of the phase and whose total = the cash -> DUPLICATE_PAYMENT
+    #   over_amt : is still unused and open, with open < cash <= 1.10 x open                                -> OVERPAYMENT
+    lp = f"{w}/line_party.parquet"
+    if os.path.exists(lp):
+        con.execute(f"""CREATE TABLE NI AS
+          SELECT l.bank_txn_id, abs(l.amount_cents) cash, l.currency, l.booking_date, p.party_id
+          FROM '{w}/lines.parquet' l JOIN '{lp}' p USING (bank_txn_id)
+          WHERE l.direction = 'IN' AND p.confidence >= 0.5
+            AND l.bank_txn_id IN (SELECT bank_txn_id FROM A GROUP BY 1 HAVING count(item_id) = 0)""")
+        con.execute(f"""CREATE TABLE USED AS SELECT a.item_id, min(l.booking_date) first_bd, sum(a.amount_cents) applied
+                        FROM A a JOIN '{w}/lines.parquet' l USING (bank_txn_id)
+                        WHERE a.item_id IS NOT NULL AND coalesce(a.exception, '') NOT IN ('RETURNED', 'DUPLICATE_PAYMENT') GROUP BY 1""")
+        con.execute(f"""CREATE TABLE EXTRA AS
+          WITH c AS (
+            SELECT n.bank_txn_id, i.item_id, i.total_cents, i.open_at_start_cents open_c, n.cash,
+                   CASE WHEN u.item_id IS NOT NULL AND u.first_bd < n.booking_date AND u.applied >= i.open_at_start_cents
+                             AND i.total_cents = n.cash THEN 'dup_amt'
+                        WHEN u.item_id IS NULL AND i.open_at_start_cents > 0 AND n.cash > i.open_at_start_cents + 1
+                             AND n.cash <= 1.10 * i.open_at_start_cents THEN 'over_amt' END how
+            FROM NI n JOIN '{w}/items.parquet' i ON i.party_id = n.party_id AND i.currency = n.currency AND i.kind = 'ARI'
+                 AND i.issue_date <= n.booking_date AND i.issue_date >= n.booking_date - INTERVAL 400 DAY
+            LEFT JOIN USED u USING (item_id))
+          -- over_amt only when the excess is a whole number of currency units (customers round up): window 142 TP / 15 FP;
+          -- without that condition OVERPAYMENT F1 fell 0.47 -> 0.33
+          SELECT * FROM c WHERE how = 'dup_amt' OR (how = 'over_amt' AND (cash - open_c) % 100 = 0)
+          QUALIFY count(*) OVER (PARTITION BY bank_txn_id) = 1 AND count(*) OVER (PARTITION BY item_id, how) = 1""")
+        con.execute("""CREATE TABLE EX2 AS SELECT bank_txn_id, item_id,
+                         CASE how WHEN 'dup_amt' THEN cash ELSE open_c END amount_cents, NULL::VARCHAR category,
+                         CASE how WHEN 'dup_amt' THEN 'DUPLICATE_PAYMENT' ELSE 'OVERPAYMENT' END exception,
+                         'T5b.' || how rule, 0.6 confidence, 'unique party invoice; ' || how evidence FROM EXTRA""")
+        con.execute("DELETE FROM A WHERE item_id IS NULL AND bank_txn_id IN (SELECT bank_txn_id FROM EX2)")
+        con.execute("INSERT INTO A BY NAME SELECT * FROM EX2")
+        print("dup_amt/over_amt:", con.sql("SELECT rule, count(*) FROM EX2 GROUP BY 1").fetchall())
+    # one shape per line: a line with item rows never keeps a no-item (category) row
+    con.execute("DELETE FROM A WHERE item_id IS NULL AND bank_txn_id IN (SELECT bank_txn_id FROM A WHERE item_id IS NOT NULL)")
     con.execute(f"""CREATE TABLE X AS
       SELECT a.bank_txn_id, a.item_id, i.kind, i.currency icur, l.currency lcur, l.booking_date, abs(l.amount_cents) cash,
              i.open_at_start_cents - coalesce(sum(a.amount_cents) FILTER (WHERE coalesce(a.exception, '') NOT IN ('RETURNED', 'DUPLICATE_PAYMENT'))
