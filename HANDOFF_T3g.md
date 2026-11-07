@@ -74,3 +74,11 @@ cobros multi-factura que nadie casa, con ~29 candidatas en vez de 40. Con ≤ 24
 subset-sum: 616 únicas-correctas vs 51 únicas-incorrectas en el sondeo. En pipeline (sin golden para excluir pagadas):
 314 líneas, 955 pares, P 0,88; ventana 93,50 → 93,54; **fuera de muestra Q2-Q4 (perfil < 2024-07): 93,36 → 93,39**.
 Ampliar a 36 candidatas + abonos + rank 2-3 baja la precisión a 0,55 (descartado, parámetros por env DC_*).
+
+## 7. Medida sobre main 70a361c (el main que da 93,88 en LIVE)
+| ventana | score | Q2-Q4 fuera de muestra |
+|---|---|---|
+| main + delaycomb (T21) | 93,49 | 93,36 |
+| main + delaycomb + tolpost (overfix + T3u) | **93,67** | **93,53** |
+`tolpost` = +0,18 (macro-F1 89,33 → 90,12), consistente fuera de muestra (+0,17). `delaycomb` ≈ +0,02 (955 pares,
+P 0,88). Recomendación: integrar los tres (sin riesgo medido; NO_T3G=1 los apaga). LIVE en curso.
