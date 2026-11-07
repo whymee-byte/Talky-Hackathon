@@ -174,8 +174,10 @@ def parse_n43(path: Path) -> Iterator[NormalizedTransaction | MalformedRecord]:
                 detail_lines.append(lines[index])
                 raw_lines.append(lines[index])
                 index += 1
+            auxiliary = ""
             if index < len(lines) and lines[index].startswith("24"):
-                raw_lines.append(lines[index])
+                auxiliary = lines[index]
+                raw_lines.append(auxiliary)
                 index += 1
             raw_record = "\n".join(raw_lines)
             try:
@@ -184,6 +186,8 @@ def parse_n43(path: Path) -> Iterator[NormalizedTransaction | MalformedRecord]:
                 invalid_detail = next((detail for detail in detail_lines if len(detail) != 80), None)
                 if invalid_detail is not None:
                     raise ValueError(f"record 23 must be 80 characters, got {len(invalid_detail)}")
+                if auxiliary and len(auxiliary) != 80:
+                    raise ValueError(f"record 24 must be 80 characters, got {len(auxiliary)}")
                 booking_date = _parse_n43_date(line[10:16])
                 value_date = _parse_n43_date(line[16:22])
                 sign = line[27]
@@ -360,6 +364,12 @@ def _mt940_counterparty(text: str) -> str:
     return ""
 
 
+def _is_mt940_metadata(line: str) -> bool:
+    if not line.strip() or line.startswith(("{", "-}")):
+        return True
+    return line.startswith((":20:", ":21:", ":25:", ":28", ":60", ":62", ":64:", ":65:"))
+
+
 def parse_mt940(path: Path) -> Iterator[NormalizedTransaction | MalformedRecord]:
     """Parse MT940 transaction blocks, including wrapped :86: information."""
 
@@ -368,12 +378,15 @@ def parse_mt940(path: Path) -> Iterator[NormalizedTransaction | MalformedRecord]
     account = path.parent.name
     currency = _mt940_currency(lines, account, path)
     starts = [index for index, line in enumerate(lines) if line.startswith(":61:")]
+    transaction_lines: set[int] = set()
     for position, start in enumerate(starts):
         end = starts[position + 1] if position + 1 < len(starts) else len(lines)
         block_lines: list[str] = []
-        for line in lines[start:end]:
+        for line_index in range(start, end):
+            line = lines[line_index]
             if line.startswith((":62", ":64", ":65", "-}")):
                 break
+            transaction_lines.add(line_index)
             block_lines.append(line)
         raw_record = "\n".join(block_lines)
         try:
@@ -427,6 +440,10 @@ def parse_mt940(path: Path) -> Iterator[NormalizedTransaction | MalformedRecord]
             )
         except Exception as exc:
             yield _error(path, raw_record, exc, start + 1, "mt940")
+    for line_number, line in enumerate(lines):
+        if line_number in transaction_lines or _is_mt940_metadata(line):
+            continue
+        yield _error(path, line, "orphan or unknown MT940 record", line_number + 1, "mt940")
 
 
 def parse_file(path: Path) -> Iterator[NormalizedTransaction | MalformedRecord]:
