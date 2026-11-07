@@ -19,17 +19,23 @@ T2_SEGMENTS = ["ar_dd_batch", "ar_dd_returned", "ar_card_settlement", "ar_cheque
                "ap_payment_single", "ap_confirming", "ap_paid_by_holding", "ap_credit_note_netted", "ap_direct_debit"]
 
 
-def evaluate(phase: str, data: str | None = None, rules: list[str] | None = None):
+def evaluate(phase: str, data: str | None = None, rules: list[str] | None = None, subset: str | None = None):
+    from src.sidefiles.__main__ import SUBSETS
     con = duckdb.connect()
     work = os.path.join(REPO, "work", phase).replace(os.sep, "/")
     g = os.path.join(phase_dir(phase, data), "golden_allocations.csv.gz").replace(os.sep, "/")
-    con.sql(f"create view lines as select bank_txn_id from '{work}/lines.parquet'")
+    where = ""
+    if subset:
+        lo, hi = SUBSETS[subset]
+        where = f" where booking_date between '{lo}' and '{hi}'"
+    con.sql(f"create view lines as select bank_txn_id from '{work}/lines.parquet'{where}")
     con.sql(f"""create table g as select g.bank_txn_id, nullif(g.item_id, '') item_id, round(g.amount::double * 100)::bigint amount_cents,
                 coalesce(g.exception, '') exception, g.segment
                 from read_csv('{g}', all_varchar=true, header=true) g join lines using (bank_txn_id)""")
     con.sql("create table seg as select bank_txn_id, any_value(segment) segment from g group by 1")
     filt = "" if not rules else "where rule in (" + ", ".join(f"'{r}'" for r in rules) + ")"
-    con.sql(f"create table s as select * from '{work}/side_links.parquet' {filt}")
+    sl = f"side_links_{subset}.parquet" if subset else "side_links.parquet"
+    con.sql(f"create table s as select * from '{work}/{sl}' {filt}")
     con.sql("""create table m as select s.*, seg.segment,
                  g.item_id is not null and abs(s.amount_cents - g.amount_cents) <= greatest(1, 0.005 * g.amount_cents) tp,
                  g.item_id is not null and abs(s.amount_cents - g.amount_cents) <= greatest(1, 0.005 * g.amount_cents)
@@ -58,8 +64,9 @@ def main(argv=None) -> int:
     ap.add_argument("--data")
     ap.add_argument("--segments", default=",".join(T2_SEGMENTS), help="segments to show ('all' = every segment)")
     ap.add_argument("--rules", help="only evaluate these side_links rules (comma separated)")
+    ap.add_argument("--subset", help="dev subset of the window (e.g. q1)")
     a = ap.parse_args(argv)
-    per_seg, per_rule, tot, gold_all = evaluate(a.phase, a.data, a.rules.split(",") if a.rules else None)
+    per_seg, per_rule, tot, gold_all = evaluate(a.phase, a.data, a.rules.split(",") if a.rules else None, a.subset)
     show = None if a.segments == "all" else set(a.segments.split(","))
     print(f"[{a.phase}] side_links: {tot[0]} pairs, precision {pct(tot[1] or 0, tot[0])} %, "
           f"share of all golden pairs found {pct(tot[1] or 0, gold_all)} %")

@@ -7,6 +7,7 @@ Rules (rule ids are stable, used in the audit trail):
 - T2.dd_batch      batch credit (IN, same account, batch_id in the bank text) → every receipt of the batch;
                    re-presented receipts (re_presentation=Y) carry no exception.
 - T2.dd_return     R-transaction (OUT, mandate in the text, batch when quoted) → item of the reversed receipt, RETURNED.
+- T2.run_transfer / T2.run_aggregated / T2.run_confirming   payment_runs/ (see runs.py)
 """
 from __future__ import annotations
 
@@ -19,8 +20,9 @@ import time
 import duckdb
 
 from src.common import REPO, data_root, phase_dir, safe_stdout
+from src.sidefiles import deposits, runs
 
-STEPS = ["dd", "ret"]
+STEPS = ["dd", "ret", "pr", "card", "chq"]
 COLUMNS = "bank_txn_id, item_id, amount_cents, exception, rule, link_key, confidence, evidence"
 
 
@@ -73,10 +75,18 @@ NORM = "trim(regexp_replace(strip_accents(upper(coalesce({x}, ''))), '[^A-Z0-9]+
 DIGITS = "nullif(ltrim(regexp_replace(coalesce({x}, ''), '[^0-9]', '', 'g'), '0'), '')"
 
 
-def setup(con, phase: str, data: str | None):
+# development subsets of the window (DECISIONS D1: iterate fast on Q1, measure the full window before each commit)
+SUBSETS = {"q1": ("2024-07-01", "2024-09-30")}
+
+
+def setup(con, phase: str, data: str | None, subset: str | None = None):
     ensure_base_parquets(phase, data)
     work = os.path.join(REPO, "work", phase).replace(os.sep, "/")
-    con.sql(f"create view lines as select * from '{work}/lines.parquet'")
+    where = ""
+    if subset:
+        lo, hi = SUBSETS[subset]
+        where = f" where booking_date between '{lo}' and '{hi}'"
+    con.sql(f"create view lines as select * from '{work}/lines.parquet'{where}")
     con.sql(f"create view items as select * from '{work}/items.parquet'")
     masters = os.path.join(data_root(data), "masters").replace(os.sep, "/")
     q = "quote='\"', escape='\"', delim=','"
@@ -202,21 +212,26 @@ def step_ret(con, dirs) -> str | None:
     return "links_ret"
 
 
-def build(phase: str, data: str | None, steps: list[str]) -> dict:
+def build(phase: str, data: str | None, steps: list[str], subset: str | None = None) -> dict:
     con = duckdb.connect()
-    setup(con, phase, data)
+    setup(con, phase, data, subset)
     dirs = detail_dirs(phase, data)
     tables = []
     for s in steps:
-        t = {"dd": step_dd, "ret": step_ret}[s](con, dirs)
+        t = {"dd": step_dd, "ret": step_ret,
+             "pr": lambda c, d: runs.step_pr(c, glob_csv(d, "payment_runs")),
+             "card": lambda c, d: deposits.step_card(c, glob_csv(d, "card_settlements")),
+             "chq": lambda c, d: deposits.step_cheque(c, glob_csv(d, "cheque_deposits"), resolve_receipts)}[s](con, dirs)
         if t:
             tables.append(t)
+            n = con.sql(f"select count(*) from {t}").fetchall()[0][0]
+            print(f"  step {s:5s} -> {n:8d} pairs", flush=True)
     union = " union all ".join(f"select {COLUMNS} from {t}" for t in tables) or \
         f"select null::varchar bank_txn_id, null::varchar item_id, null::bigint amount_cents, null::varchar exception, null::varchar rule, null::varchar link_key, null::double confidence, null::varchar evidence where false"
     # one row per (line, item): keep the most confident rule
     con.sql(f"""create or replace table side_links as select * from ({union})
                qualify row_number() over (partition by bank_txn_id, item_id order by confidence desc, rule) = 1""")
-    out = os.path.join(REPO, "work", phase, "side_links.parquet").replace(os.sep, "/")
+    out = os.path.join(REPO, "work", phase, f"side_links{'_' + subset if subset else ''}.parquet").replace(os.sep, "/")
     con.sql(f"copy side_links to '{out}' (format parquet)")
     return {r[0]: (r[1], r[2]) for r in con.sql("select rule, count(*), count(distinct bank_txn_id) from side_links group by 1 order by 1").fetchall()}
 
@@ -227,12 +242,13 @@ def main(argv=None) -> int:
     ap.add_argument("--phase", required=True, choices=["sample", "train", "window", "live", "final"])
     ap.add_argument("--data")
     ap.add_argument("--steps", default=",".join(STEPS))
+    ap.add_argument("--subset", choices=sorted(SUBSETS), help="window only: dev subset (writes side_links_<subset>.parquet)")
     a = ap.parse_args(argv)
     t0 = time.time()
-    r = build(a.phase, a.data, [s for s in a.steps.split(",") if s])
+    r = build(a.phase, a.data, [s for s in a.steps.split(",") if s], a.subset)
     for rule, (n, nl) in r.items():
         print(f"  {rule:22s} pairs={n:8d} lines={nl:7d}")
-    print(f"[{a.phase}] side_links -> work/{a.phase}/side_links.parquet ({time.time() - t0:.0f}s)")
+    print(f"[{a.phase}{'/' + a.subset if a.subset else ''}] side_links -> work/{a.phase}/side_links{'_' + a.subset if a.subset else ''}.parquet ({time.time() - t0:.0f}s)", flush=True)
     return 0
 
 
