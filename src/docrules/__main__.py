@@ -8,7 +8,6 @@ Reads work/<phase>/{allocations,lines,items,line_party,doc_facts}.parquet and re
   inst_exc   row on an instalment invoice: instalment k = schedule date closest to the booking date; k < n → PARTIAL
              (amount = cash), k = n → no exception
   ret_exc    retention invoice: cash = total − retention → PARTIAL; cash = retention → release, no exception
-  adv_exc    advance to deduct: cash = total − advance → PARTIAL
   late_exc   line cash = Σ rows − Σ early-payment discount of rows booked after discount days + 3 → those rows PARTIAL
              at total − discount (the discount is not accepted)
   add_*      UNIDENTIFIED receipt whose cash equals, for one open invoice of a candidate payer (line_party) in the line
@@ -89,7 +88,8 @@ def build(phase: str, skip: set[str], work: str | None = None) -> dict:
           QUALIFY count(*) OVER (PARTITION BY x.item_id) = 1""")
         stats["replaces"] = con.execute("""UPDATE A SET item_id = RP.new_id, """ + tag("replaces") + """,
             evidence = coalesce(evidence, '') || '; PDF: replaced invoice ' || RP.old_id
-          FROM RP WHERE A.item_id = RP.old_id
+          FROM RP JOIN I n ON n.item_id = RP.new_id WHERE A.item_id = RP.old_id
+            AND abs(A.amount_cents - n.total_cents) <= greatest(1, 0.03 * n.total_cents)
             AND NOT EXISTS (SELECT 1 FROM A a2 WHERE a2.bank_txn_id = A.bank_txn_id AND a2.item_id = RP.new_id)""").fetchone()[0]
 
     # ---- exception fixes on existing rows ------------------------------------------------------------------------
@@ -103,23 +103,23 @@ def build(phase: str, skip: set[str], work: str | None = None) -> dict:
       FROM B b JOIN I i USING (item_id) JOIN L l USING (bank_txn_id) JOIN IF_ f USING (item_id)
       WHERE i.kind = 'ARI' AND l.direction = 'IN' AND coalesce(b.exception, '') IN ('', 'PARTIAL', 'FX_DIFFERENCE')""")
     fixes = {
-        # rule: (condition, new exception)
-        "inst_exc": ("x.n IS NOT NULL AND x.k < x.n", "'PARTIAL'"),
-        "inst_last": ("x.n IS NOT NULL AND x.k = x.n", "CASE WHEN x.icur <> x.lcur THEN 'FX_DIFFERENCE' ELSE '' END"),
+        # rule: (condition, new exception, new amount)
+        "inst_exc": ("x.n IS NOT NULL AND x.k < x.n", "'PARTIAL'",
+                     "CASE WHEN x.icur = x.lcur AND x.amts[x.k] IS NOT NULL THEN x.amts[x.k] ELSE A.amount_cents END"),
+        "inst_last": ("x.n IS NOT NULL AND x.k = x.n", "CASE WHEN x.icur <> x.lcur THEN 'FX_DIFFERENCE' ELSE '' END",
+                      "A.amount_cents"),
         "ret_exc": (f"x.ret_c IS NOT NULL AND abs(x.amount_cents - (x.total_cents - x.ret_c)) <= {TOL.format('x.total_cents')}",
-                    "'PARTIAL'"),
+                    "'PARTIAL'", "A.amount_cents"),
         "ret_release": (f"x.ret_c IS NOT NULL AND abs(x.amount_cents - x.ret_c) <= {TOL.format('x.ret_c')}",
-                        "CASE WHEN x.icur <> x.lcur THEN 'FX_DIFFERENCE' ELSE '' END"),
-        "adv_exc": (f"x.adv_c IS NOT NULL AND abs(x.amount_cents - (x.total_cents - x.adv_c)) <= {TOL.format('x.total_cents')}",
-                    "'PARTIAL'"),
+                        "CASE WHEN x.icur <> x.lcur THEN 'FX_DIFFERENCE' ELSE '' END", "A.amount_cents"),
     }
-    for rule, (cond, exc) in fixes.items():
+    for rule, (cond, exc, amt) in fixes.items():
         if rule in skip:
             continue
-        stats[rule] = con.execute(f"""UPDATE A SET exception = {exc}, {tag(rule)},
+        stats[rule] = con.execute(f"""UPDATE A SET exception = {exc}, amount_cents = {amt}, {tag(rule)},
               evidence = coalesce(evidence, '') || '; PDF clause ({rule})'
             FROM X x WHERE A.bank_txn_id = x.bank_txn_id AND A.item_id = x.item_id AND ({cond})
-              AND coalesce(A.exception, '') IS DISTINCT FROM {exc}""").fetchone()[0]
+              AND (coalesce(A.exception, '') IS DISTINCT FROM {exc} OR A.amount_cents IS DISTINCT FROM {amt})""").fetchone()[0]
 
     # late discount: line cash = Σ rows − Σ discount of the late-discount rows → those rows PARTIAL at total − discount
     if "late_exc" not in skip:
@@ -216,7 +216,7 @@ def build(phase: str, skip: set[str], work: str | None = None) -> dict:
     con.execute(f"COPY (SELECT {KEEP} FROM A) TO '{out}.tmp' (FORMAT parquet)")
     os.replace(f"{out}.tmp", out)
     stats["rows_before"], stats["rows_after"] = n0, n1
-    stats["shares"] = len(shares)
+    stats["shares"] = "/".join(f"{r:g}" for r in shares)
     return stats
 
 
@@ -235,7 +235,8 @@ def _shares_from_items(con, g: str, w: str) -> list[float]:
                  WHERE bank_txn_id NOT IN (SELECT bank_txn_id FROM '{w}/lines.parquet') AND item_id LIKE 'ARI%'),
            s AS (SELECT bank_txn_id FROM g GROUP BY 1 HAVING count(*) = 1),
            p AS (SELECT round(g.amt / i.total_cents, 2) r, g.amt = round(i.total_cents * round(g.amt / i.total_cents, 2)) exact
-                 FROM g JOIN s USING (bank_txn_id) JOIN I i USING (item_id) WHERE g.exc = 'PARTIAL')
+                 FROM g JOIN s USING (bank_txn_id) JOIN I i USING (item_id) WHERE g.exc = 'PARTIAL'
+                   AND coalesce(i.discount_pct, 0) = 0 AND i.item_id NOT IN (SELECT item_id FROM IF_))
       SELECT r FROM p WHERE exact AND r > 0 AND r < 1 GROUP BY r HAVING count(*) >= 0.02 * (SELECT count(*) FROM p)
       ORDER BY r""").fetchall()
     return [r for (r,) in rows]
