@@ -50,6 +50,7 @@ step "due invoices on long receipts (T20)" $PY -u -m src.duefill --phase "$PHASE
 [[ -n "${NO_T3G:-}" ]] || step "tolerant matches (T3g)" $PY -u -m src.tolmatch --phase "$PHASE"
 step "more credit notes (T19)" $PY -u -m src.cnmore --phase "$PHASE"
 step "last exception fixes (T15)" $PY -u -m src.excfix --phase "$PHASE"
+[[ -n "${NO_T3G:-}" ]] || step "overpayment shape (T3g)" $PY -u -m src.tolmatch --phase "$PHASE" --overfix
 if [[ "$PHASE" == "window" || "$PHASE" == "sample" ]]; then
   step "write + score" $PY -u -m src.submit --phase "$PHASE" --from "work/$PHASE/allocations.parquet" --score
 else
