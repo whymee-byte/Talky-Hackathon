@@ -39,6 +39,7 @@ step "pdf clauses"      $PY -u -m src.docrules --phase "$PHASE"
 step "exception norm"   $PY -u -m src.excnorm   --phase "$PHASE"
 step "multi-ref receipts" $PY -u -m src.multiref  --phase "$PHASE"
 step "unique amount (T14)" $PY -u -m src.refnoise --phase "$PHASE"
+step "credit-note netting" $PY -u -m src.cnlink --phase "$PHASE"
 step "unidentified"     $PY -u -m src.unident     --phase "$PHASE"
 [[ -n "${NO_CNFX:-}" ]] || step "credit notes / FX sets" $PY -u -m src.cnfx --phase "$PHASE"
 if [[ "$PHASE" == "window" || "$PHASE" == "sample" ]]; then
