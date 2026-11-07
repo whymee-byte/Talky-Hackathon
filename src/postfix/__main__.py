@@ -37,7 +37,12 @@ def build(phase: str) -> None:
                  'no item after T3; text quotes ' || c.how || ' number of a party item' AS evidence
           FROM '{cands}' c
           WHERE c.how NOT IN ('trunc', 'typo', 'typo+trunc', 'trunc+typo') AND c.kind = 'ARI'
-            AND c.bank_txn_id IN (SELECT bank_txn_id FROM A GROUP BY 1 HAVING count(item_id) = 0)
+            AND (c.bank_txn_id IN (SELECT bank_txn_id FROM A GROUP BY 1 HAVING count(item_id) = 0)
+                 OR c.bank_txn_id IN (   -- lines whose items still fall short of the cash
+                    SELECT a.bank_txn_id FROM A a JOIN '{w}/lines.parquet' l USING (bank_txn_id) JOIN '{w}/items.parquet' i USING (item_id)
+                    WHERE l.direction = 'IN' AND i.currency = l.currency AND coalesce(a.exception, '') <> 'RETURNED'
+                    GROUP BY a.bank_txn_id, l.amount_cents
+                    HAVING sum(CASE WHEN i.kind = 'ARC' THEN -a.amount_cents ELSE a.amount_cents END) < abs(l.amount_cents) - greatest(100, 0.005 * abs(l.amount_cents))))
             AND c.item_id NOT IN (SELECT item_id FROM A WHERE item_id IS NOT NULL)
           QUALIFY row_number() OVER (PARTITION BY c.item_id ORDER BY c.bank_txn_id) = 1""")
         con.execute("DELETE FROM A WHERE item_id IS NULL AND bank_txn_id IN (SELECT bank_txn_id FROM FILL)")
