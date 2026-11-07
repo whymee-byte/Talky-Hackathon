@@ -35,23 +35,32 @@ def extract(phase: str, data: str | None = None, workers: int = 8) -> str:
     import pyarrow as pa
     import pyarrow.parquet as pq
     base = os.path.join(phase_dir(phase, data), "pdfs")
-    rows = [r for r in csv.DictReader(open(os.path.join(base, "index.csv"), encoding="utf-8-sig"))
-            if not os.path.basename(r["file"]).startswith("._")]
+    index = os.path.join(base, "index.csv")
+    out_dir = os.path.join(REPO, "data_cache", phase)
+    os.makedirs(out_dir, exist_ok=True)
+    out = os.path.join(out_dir, "pdf_text.parquet")
+    rows = []
+    if os.path.exists(index):
+        with open(index, encoding="utf-8-sig", newline="") as fh:
+            rows = [r for r in csv.DictReader(fh) if not os.path.basename(r["file"]).startswith("._")]
+    if not rows:   # a phase without PDFs (or an empty index) is not an error: downstream steps see no facts
+        print(f"[{phase}] no PDFs under {base}: writing an empty text cache", flush=True)
+        cols = {k: [] for k in ("file", "document_type", "document_number", "entity", "party_id", "document_date")}
+        cols["text"] = []
+        pq.write_table(pa.table({k: pa.array(v, pa.string()) for k, v in cols.items()}), out)
+        return out
     paths = [os.path.join(base, r["file"]) for r in rows]
     size = 200
     chunks = [paths[i:i + size] for i in range(0, len(paths), size)]
     texts: list[str] = []
     t0 = time.time()
     with ProcessPoolExecutor(max_workers=workers) as ex:
-        for i, out in enumerate(ex.map(_chunk, chunks)):
-            texts.extend(out)
+        for i, chunk_texts in enumerate(ex.map(_chunk, chunks)):   # not `out`: that is the parquet path
+            texts.extend(chunk_texts)
             if i % 20 == 0:
                 print(f"  {len(texts)}/{len(paths)} pdfs ({time.time() - t0:.0f}s)", flush=True)
     cols = {k: [r[k] for r in rows] for k in rows[0]}
     cols["text"] = texts
-    out_dir = os.path.join(REPO, "data_cache", phase)
-    os.makedirs(out_dir, exist_ok=True)
-    out = os.path.join(out_dir, "pdf_text.parquet")
     pq.write_table(pa.table(cols), out)
     return out
 

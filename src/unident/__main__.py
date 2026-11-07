@@ -76,11 +76,18 @@ def build(phase: str, src_name: str, dst_name: str) -> None:
     party = (f"""SELECT bank_txn_id, max(confidence) pc, arg_max(method, confidence) pm, arg_max(party_id, confidence) party
                  FROM '{lp}' GROUP BY 1""" if os.path.exists(lp) else
              "SELECT NULL::VARCHAR bank_txn_id, NULL::DOUBLE pc, NULL::VARCHAR pm, NULL::VARCHAR party WHERE false")
+    # customer / supplier from the masters (T4's parties table), not from the id prefix
+    pm_dir = os.path.join(REPO, "work", "party_model", "pre_window" if phase in ("window", "sample") else "full")
+    pk = f"{pm_dir}/parties.parquet"
+    kinds = (f"SELECT party_id, kind FROM '{pk}'" if os.path.exists(pk) else
+             "SELECT NULL::VARCHAR party_id, NULL::VARCHAR kind WHERE false")
     # no-item rows in scope + their features
     con.execute(f"""CREATE TABLE N AS
       SELECT a.bank_txn_id, a.category, coalesce(a.exception, '') exc, a.rule old_rule, l.direction, l.currency,
-             l.booking_date bd, abs(l.amount_cents) cash, l.text_norm, coalesce(p.pc, 0) pc, coalesce(p.pm, 'none') pm, p.party
+             l.booking_date bd, abs(l.amount_cents) cash, l.text_norm, coalesce(p.pc, 0) pc, coalesce(p.pm, 'none') pm, p.party,
+             coalesce(k.kind, left(p.party, 1)) pkind
       FROM A a JOIN '{w}/lines.parquet' l USING (bank_txn_id) LEFT JOIN ({party}) p USING (bank_txn_id)
+      LEFT JOIN ({kinds}) k ON k.party_id = p.party
       WHERE a.item_id IS NULL AND ((l.direction = 'IN' AND a.category = 'UNIDENTIFIED')
                                 OR (l.direction = 'OUT' AND a.category = 'BANK_FEES' AND a.rule LIKE 'T3.none%'))""")
     # best deciding word of each line
@@ -104,14 +111,14 @@ def build(phase: str, src_name: str, dst_name: str) -> None:
       r AS (
         SELECT *, CASE
           WHEN direction = 'OUT' AND tcat IS NOT NULL THEN 'token.' || tcat
-          WHEN direction = 'OUT' AND party LIKE 'C%' AND pc >= {PARTY_MIN} THEN 'customer_refund'
+          WHEN direction = 'OUT' AND pkind = 'C' AND pc >= {PARTY_MIN} THEN 'customer_refund'
           WHEN direction = 'OUT' THEN NULL
           WHEN tcat = 'UNIDENTIFIED' THEN 'token.unid'
           WHEN tcat IS NOT NULL THEN 'token.' || tcat
           WHEN mk = 'none' THEN 'no_party'
           WHEN mk = 'weak' AND NOT (has_eq AND old_rule LIKE 'T3.none%') THEN 'weak_party'
           WHEN mk = 'name' AND old_rule NOT LIKE 'T3.none%' THEN 'name_text'
-          WHEN party LIKE 'S%' THEN 'supplier_refund'
+          WHEN pkind = 'S' THEN 'supplier_refund'
           ELSE 'known_party.' || mk END how
         FROM f)
       SELECT bank_txn_id, how,

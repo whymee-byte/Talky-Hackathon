@@ -52,7 +52,12 @@ def build(phase: str, skip: set[str], work: str | None = None) -> dict:
     con.execute(f"CREATE TABLE L AS SELECT bank_txn_id, booking_date, amount_cents, currency, direction FROM '{w}/lines.parquet'")
     con.execute(f"CREATE TABLE I AS SELECT * FROM '{w}/items.parquet'")
     con.execute(f"CREATE TABLE LP AS SELECT bank_txn_id, rank, party_id FROM '{w}/line_party.parquet' WHERE party_id IS NOT NULL")
-    con.execute(f"CREATE TABLE F AS SELECT * FROM '{w}/doc_facts.parquet' WHERE item_id IS NOT NULL")
+    if os.path.exists(f"{w}/doc_facts.parquet"):
+        con.execute(f"CREATE TABLE F AS SELECT * FROM '{w}/doc_facts.parquet' WHERE item_id IS NOT NULL")
+    else:   # a phase without PDFs: no clauses, the allocations pass through unchanged (never a failure)
+        print(f"[{phase}] no doc_facts.parquet: no PDF clauses to apply")
+        con.execute("""CREATE TABLE F (pdf_file VARCHAR, entity VARCHAR, party_id VARCHAR, doc_number VARCHAR, item_id VARCHAR,
+                       fact VARCHAR, value_num DOUBLE, value_text VARCHAR, valid_from DATE, rule VARCHAR, evidence VARCHAR)""")
     n0 = con.execute("SELECT count(*) FROM A").fetchone()[0]
     stats: dict[str, int] = {}
 

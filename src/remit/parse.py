@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import unicodedata
 import io
 import os
 import re
@@ -34,6 +35,31 @@ HEAD = {"document": "doc", "documento": "doc", "invoice": "doc", "factura": "doc
         "gross": "gross", "amount": "gross", "bruto": "gross", "importe": "gross",
         "discount_or_deduction": "deduction", "deduction": "deduction", "dto./ded.": "deduction",
         "reason": "reason", "motivo": "reason", "paid": "paid", "net paid": "paid", "pagado": "paid"}
+
+
+# fallback when a header is not an exact key (new layouts): words of the normalised header → column, first rule wins
+HEAD_WORDS = [("doc_date", {"date", "fecha", "datum", "data"}),
+              ("paid", {"paid", "pagado", "bezahlt", "paye", "pago", "pagato", "net", "neto", "netto"}),
+              ("deduction", {"deduction", "deduccion", "descuento", "discount", "dto", "abzug", "skonto", "remise"}),
+              ("reason", {"reason", "motivo", "grund", "motif", "causale", "comment", "concepto"}),
+              ("po", {"po", "order", "pedido", "bestellung", "commande", "ordine"}),
+              ("gross", {"gross", "bruto", "brutto", "amount", "importe", "betrag", "montant", "importo", "total"}),
+              ("voucher", {"voucher", "vale"}),
+              ("doc", {"document", "documento", "doc", "invoice", "inv", "factura", "rechnung", "facture", "fattura", "nr", "no"})]
+
+
+def _norm_head(h) -> str:
+    s = unicodedata.normalize("NFKD", str(h or "")).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", " ", s).strip()
+
+
+def head_col(h) -> str | None:
+    """Canonical column of a header cell: exact key first, else by its words (any language)."""
+    k = str(h or "").strip().lower()
+    if k in HEAD:
+        return HEAD[k]
+    words = set(_norm_head(h).split())
+    return next((c for c, ws in HEAD_WORDS if words & ws), None)
 
 
 def amount(s) -> float | None:
@@ -101,9 +127,13 @@ def _rows_from_table(rows: list[list], start: int) -> tuple[list[dict], dict]:
     """rows[start] is the header row; returns (line dicts, column map)."""
     head = [str(x or "").strip().lower() for x in rows[start]]
     cmap = {}
-    for j, h in enumerate(head):
+    for j, h in enumerate(head):  # exact keys first, word fallback only for columns still unmapped
         c = HEAD.get(h)
         if c and c not in cmap:
+            cmap[c] = j
+    for j, h in enumerate(head):
+        c = None if h in HEAD else head_col(h)
+        if c and c not in cmap and j not in cmap.values():
             cmap[c] = j
     out = []
     for r in rows[start + 1:]:
@@ -138,7 +168,22 @@ def parse_csv(text: str) -> tuple[dict, list[dict]]:
     kv = {str(h[i]).strip().lower(): h[i + 1] for i in range(0, len(h) - 1, 2)}
     head = {"payment_ref": _s(kv.get("payment_ref")), "payment_date": iso_date(kv.get("payment_date")),
             "adv_currency": _s(kv.get("currency"))}
-    hdr = next(i for i, r in enumerate(rows) if r and str(r[0]).strip().lower() in HEAD)
+    if not all(head.values()):  # unknown key names: infer each field from the shape of its value
+        for k, v in kv.items():
+            v = _s(v)
+            if not v:
+                continue
+            if not head["adv_currency"] and re.fullmatch(r"[A-Z]{3}", v):
+                head["adv_currency"] = v
+            elif not head["payment_date"] and iso_date(v):
+                head["payment_date"] = iso_date(v)
+            elif not head["payment_ref"] and re.search(r"\d", v) and ("ref" in _norm_head(k) or "pay" in _norm_head(k)):
+                head["payment_ref"] = v
+        if not head["payment_ref"]:  # last resort: the value left that carries digits and is neither a date nor a currency
+            rest = [_s(v) for v in kv.values() if _s(v) and re.search(r"\d", _s(v)) and not iso_date(_s(v)) and _s(v) != head["adv_currency"]]
+            if rest:
+                head["payment_ref"] = rest[0]
+    hdr = next(i for i, r in enumerate(rows) if r and (str(r[0]).strip().lower() in HEAD or i > 0 and head_col(r[0])))
     lines, _ = _rows_from_table(rows, hdr)
     tot = [r for r in rows if r and str(r[0]).strip().upper().startswith("TOTAL")]
     if tot:

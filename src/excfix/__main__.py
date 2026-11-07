@@ -30,7 +30,8 @@ import time
 
 import duckdb
 
-from src.common import REPO
+from src.common import REPO, data_root
+from src.common.profile import sql_wht_min_diff, sql_wht_parties, withholding
 
 TOL = "greatest(1, 0.005 * abs(remaining))"
 NONSEPA = ("({t}bank_code LIKE '%XBCT' OR ({t}statement_format = 'n43' AND {t}bank_code = '13') OR {t}bank_code = 'NTRF'"
@@ -41,7 +42,7 @@ OVER_ADD_PCT = 0.01        # over_add: excess = exactly 1 % of the open amount (
 BC_EUR_STEP = 500          # bc_add on EUR lines: the fee is a whole multiple of 5 EUR (TRAIN shortfall distribution)
 OVER_SINGLE_MAX = 1.5      # over_single: whole-unit excess up to 50 %
 OVER_SMALL = 1.02          # over_single: any excess up to 2 %
-WHT_ENTITIES = ('MX01', 'BR01', 'MA01')   # POLICIES §3 SHORT_WITHHOLDING countries
+# SHORT_WITHHOLDING customers: learned from TRAIN + POLICIES §3 by customer country (src.common.profile), not entity ids
 
 
 def build(phase: str, alloc: str | None = None, dst: str | None = None) -> None:
@@ -49,7 +50,7 @@ def build(phase: str, alloc: str | None = None, dst: str | None = None) -> None:
     w = os.path.join(REPO, "work", phase).replace(os.sep, "/")
     p = (alloc or f"{w}/allocations.parquet").replace(os.sep, "/")
     out = (dst or p).replace(os.sep, "/")
-    fx = os.path.join(REPO, "data", "masters", "fx_rates.csv").replace(os.sep, "/")
+    fx = os.path.join(data_root(), "masters", "fx_rates.csv").replace(os.sep, "/")   # same masters as the rest (HK_DATA root)
     con = duckdb.connect()
     con.execute(f"CREATE TABLE A AS SELECT * FROM '{p}'")
     con.execute(f"CREATE VIEW L AS SELECT * FROM '{w}/lines.parquet'")
@@ -114,6 +115,7 @@ def build(phase: str, alloc: str | None = None, dst: str | None = None) -> None:
                        FROM A a JOIN L l USING (bank_txn_id)
                        WHERE a.item_id IS NOT NULL AND coalesce(a.exception, '') <> 'DUPLICATE_PAYMENT' GROUP BY 1""")
         nonsepa = NONSEPA.format(t="n.")
+        whtp = sql_wht_parties(con, withholding(phase))
         con.execute(f"""CREATE TABLE C AS
           SELECT n.bank_txn_id, n.direction, i.item_id, i.kind, i.total_cents, i.open_at_start_cents open_c, n.cash,
             CASE WHEN n.direction = 'IN' AND i.kind = 'ARI' AND u.item_id IS NULL AND i.open_at_start_cents > 0
@@ -121,7 +123,7 @@ def build(phase: str, alloc: str | None = None, dst: str | None = None) -> None:
                       AND abs(n.cash - round(i.total_cents * (1 - i.discount_pct / 100))) <= 1
                       AND i.open_at_start_cents = i.total_cents THEN 'disc_add'
                  WHEN n.direction = 'IN' AND i.kind = 'ARI' AND u.item_id IS NULL AND i.open_at_start_cents > 0
-                      AND {nonsepa} AND n.entity NOT IN {WHT_ENTITIES}
+                      AND {nonsepa} AND n.party_id NOT IN {whtp}
                       AND i.open_at_start_cents - n.cash > 0 AND i.open_at_start_cents - n.cash <= {BC_PCT} * i.open_at_start_cents
                       AND (i.open_at_start_cents - n.cash) / coalesce(n.u, 1.0) <= {BC_EUR_MAX}
                       AND (n.currency <> 'EUR' OR (i.open_at_start_cents - n.cash) % {BC_EUR_STEP} = 0) THEN 'bc_add'
@@ -151,20 +153,23 @@ def build(phase: str, alloc: str | None = None, dst: str | None = None) -> None:
         con.execute("DELETE FROM A WHERE item_id IS NULL AND bank_txn_id IN (SELECT bank_txn_id FROM ADDR)")
         con.execute("INSERT INTO A BY NAME SELECT * FROM ADDR")
         adds = con.sql("SELECT rule, count(*) FROM ADDR GROUP BY 1 ORDER BY 1").fetchall()
-    lab = _label_fixes(con, w)
+    lab = _label_fixes(con, w, phase)
     adds = list(adds) + lab
     n1 = con.execute("SELECT count(*) FROM A").fetchall()[0][0]
     con.execute(f"COPY A TO '{out}' (FORMAT parquet)")
     print(f"[{phase}] excfix: relabels {fixes} adds {adds} rows {n0} -> {n1} ({time.time() - t0:.0f}s)")
 
 
-def _label_fixes(con, w: str) -> list:
+def _label_fixes(con, w: str, phase: str) -> list:
     """Labels on rows whose pair and amount are already right (POLICIES §3):
       fx_flag    invoice (ARI/API) in a currency other than the line's, no exception → FX_DIFFERENCE (full open amount
                  already; credit notes keep none). Window: 450 of ~490 such rows are FX_DIFFERENCE in the golden.
-      wht_multi  receipt in an entity of a withholding country (MX, BR, MA; POLICIES §3) whose AR rows are all same-currency, at full amounts,
+      wht_multi  receipt whose AR rows are all of customers that withhold (country, src.common.profile), same-currency, at full amounts,
                  without exception, and exceed the cash by exactly r × Σ invoice totals,
                  r ∈ {1.25 %, 1.5 %, 10 %} (± 1 cent per row) → its invoices SHORT_WITHHOLDING. Window: 134 / 139."""
+    prof = withholding(phase)
+    whtp = sql_wht_parties(con, prof, table='WHTP2')
+    wht_min = sql_wht_min_diff([1 - r for r in prof['rates']], '(s.s_amt - s.cash)', 's.s_tot')
     con.execute(f"""CREATE OR REPLACE TABLE LF AS
       SELECT a.bank_txn_id, a.item_id, 'fx_flag' how FROM A a
       JOIN '{w}/items.parquet' i USING (item_id) JOIN '{w}/lines.parquet' l USING (bank_txn_id)
@@ -174,15 +179,15 @@ def _label_fixes(con, w: str) -> list:
                         sum(CASE WHEN i.kind = 'ARC' THEN -a.amount_cents ELSE a.amount_cents END) s_amt,
                         sum(CASE WHEN i.kind = 'ARI' THEN i.total_cents ELSE 0 END) s_tot
                  FROM A a JOIN '{w}/items.parquet' i USING (item_id) JOIN '{w}/lines.parquet' l USING (bank_txn_id)
-                 WHERE l.direction = 'IN' AND left(l.entity, 2) IN ('MX', 'BR', 'MA')   -- POLICIES §3: withholding countries
+                 WHERE l.direction = 'IN'
                  GROUP BY a.bank_txn_id
                  HAVING count(*) = (SELECT count(*) FROM A a2 WHERE a2.bank_txn_id = a.bank_txn_id)
                     AND bool_and(i.side = 'AR' AND i.currency = l.currency AND coalesce(a.exception, '') = ''
+                                 AND i.party_id IN {whtp}
                                  AND a.amount_cents = i.open_at_start_cents))
       SELECT a.bank_txn_id, a.item_id, 'wht_multi' FROM s JOIN A a USING (bank_txn_id) JOIN '{w}/items.parquet' i USING (item_id)
       WHERE i.kind = 'ARI' AND s.s_amt > s.cash + 1
-        AND least(abs(s.s_amt - s.cash - round(s.s_tot * 0.0125)), abs(s.s_amt - s.cash - round(s.s_tot * 0.015)),
-                  abs(s.s_amt - s.cash - round(s.s_tot * 0.10))) <= s.n""")
+        AND {wht_min} <= s.n""")
     con.execute("""UPDATE A SET exception = CASE f.how WHEN 'fx_flag' THEN 'FX_DIFFERENCE' ELSE 'SHORT_WITHHOLDING' END,
                      rule = A.rule || '+T15.' || f.how
                    FROM LF f WHERE A.bank_txn_id = f.bank_txn_id AND A.item_id = f.item_id""")

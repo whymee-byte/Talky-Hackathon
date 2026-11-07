@@ -157,23 +157,23 @@ run_stage pdffacts T8_pdf_facts
 run_stage docrules T8b_pdf_clauses
 run_stage excnorm T5c_exception_norm
 run_stage multiref T5d_multiref
-# post-stages: same order as src/final/run_phase.sh. Optional: each rewrites allocations.parquet only at the end,
-# so a failure keeps the previous (valid) file and FINAL still ships.
-opt_stage() { local module=$1 name=$2; shift 2; have "$module" && step "$name" opt "$PY" -u -m "src.$module" --phase "$PHASE" "$@"; true; }
-opt_stage refnoise T14_refnoise
-opt_stage cnlink T13_cnlink
-opt_stage mixfix T13c_mixfix
-opt_stage instrep T17_instrep
-opt_stage discombo T18_discombo
-opt_stage twopay T13d_twopay
+run_stage refnoise T5e_refnoise
+run_stage cnlink T13_cnlink
+run_stage mixfix T13c_mixfix
+run_stage instrep T17_instrep
+run_stage discombo T18_discombo
+run_stage twopay T13d_twopay
 run_stage unident T7b_unidentified
-[[ -n "${NO_CNFX:-}" ]] || opt_stage cnfx T3x_cnfx
-opt_stage duefill T20_duefill
+run_stage cnfx T13b_cnfx
+run_stage duefill T20_duefill
+run_stage tolmatch T3g_tolmatch
+run_stage cnmore T19_cnmore
+opt_stage() { local module=$1 name=$2; shift 2; have "$module" && step "$name" opt "$PY" -u -m "src.$module" --phase "$PHASE" "$@"; true; }
 opt_stage refgap T16_refgap
 opt_stage cnrest T16_cnrest
 opt_stage cnfill T21_cnfill
 opt_stage fxlate T21_fxlate
-opt_stage excfix T15_excfix
+run_stage excfix T15_excfix
 
 SHA=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo nogit)
 OUT="out/${PHASE}_$(date +%Y%m%d-%H%M)_${SHA}.csv.gz"
