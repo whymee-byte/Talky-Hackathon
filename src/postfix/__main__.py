@@ -72,9 +72,11 @@ def build(phase: str) -> None:
           FROM '{w}/lines.parquet' l JOIN '{lp}' p USING (bank_txn_id)
           WHERE l.direction = 'IN' AND p.confidence >= 0.5
             AND l.bank_txn_id IN (SELECT bank_txn_id FROM A GROUP BY 1 HAVING count(item_id) = 0)""")
-        con.execute(f"""CREATE TABLE USED AS SELECT a.item_id, min(l.booking_date) first_bd, sum(a.amount_cents) applied
+        # a RETURNED row re-opens what it reverses (direct-debit return, rejected transfer, chargeback)
+        con.execute(f"""CREATE TABLE USED AS SELECT a.item_id, min(l.booking_date) first_bd,
+                               sum(CASE WHEN a.exception = 'RETURNED' THEN -a.amount_cents ELSE a.amount_cents END) applied
                         FROM A a JOIN '{w}/lines.parquet' l USING (bank_txn_id)
-                        WHERE a.item_id IS NOT NULL AND coalesce(a.exception, '') NOT IN ('RETURNED', 'DUPLICATE_PAYMENT') GROUP BY 1""")
+                        WHERE a.item_id IS NOT NULL AND coalesce(a.exception, '') <> 'DUPLICATE_PAYMENT' GROUP BY 1""")
         con.execute(f"""CREATE TABLE EXTRA AS
           WITH c AS (
             SELECT n.bank_txn_id, i.item_id, i.total_cents, i.open_at_start_cents open_c, n.cash,
@@ -100,7 +102,8 @@ def build(phase: str) -> None:
     con.execute("DELETE FROM A WHERE item_id IS NULL AND bank_txn_id IN (SELECT bank_txn_id FROM A WHERE item_id IS NOT NULL)")
     con.execute(f"""CREATE TABLE X AS
       SELECT a.bank_txn_id, a.item_id, i.kind, i.currency icur, l.currency lcur, l.booking_date, abs(l.amount_cents) cash,
-             i.open_at_start_cents - coalesce(sum(a.amount_cents) FILTER (WHERE coalesce(a.exception, '') NOT IN ('RETURNED', 'DUPLICATE_PAYMENT'))
+             i.open_at_start_cents - coalesce(sum(CASE WHEN a.exception = 'RETURNED' THEN -a.amount_cents ELSE a.amount_cents END)
+                                                  FILTER (WHERE coalesce(a.exception, '') <> 'DUPLICATE_PAYMENT')
                  OVER (PARTITION BY a.item_id ORDER BY l.booking_date, a.bank_txn_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) remaining
       FROM A a JOIN '{w}/items.parquet' i USING (item_id) JOIN '{w}/lines.parquet' l USING (bank_txn_id)
       WHERE a.item_id IS NOT NULL""")
