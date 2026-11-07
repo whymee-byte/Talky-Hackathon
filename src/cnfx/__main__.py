@@ -175,10 +175,20 @@ def build(phase: str, alloc: str | None = None, rules: str = DEFAULT_RULES, work
       FROM f""")
     con.execute("DELETE FROM A WHERE item_id IS NULL AND bank_txn_id IN (SELECT bank_txn_id FROM NEW)")
     con.execute("INSERT INTO A BY NAME SELECT * FROM NEW")
+    # POLICIES §3 FX_DIFFERENCE: every fully cleared invoice of a line in another currency carries the flag
+    # (it replaces an empty exception or a SHORT_* one); partial / disputed rows and credit notes keep theirs
+    con.execute(f"""CREATE TABLE FXF AS
+      SELECT a.bank_txn_id, a.item_id FROM A a JOIN '{w}/items.parquet' i USING (item_id) JOIN '{w}/lines.parquet' l USING (bank_txn_id)
+      WHERE i.kind IN ('ARI', 'API') AND i.currency <> l.currency AND a.amount_cents >= i.open_at_start_cents
+        AND coalesce(a.exception, '') IN ('', 'SHORT_DISCOUNT', 'SHORT_WITHHOLDING', 'SHORT_BANK_CHARGES')""")
+    con.execute("""UPDATE A SET exception = 'FX_DIFFERENCE', rule = A.rule || '+T3x.fx_flag',
+                          evidence = A.evidence || '; T3x: invoice currency <> line currency, fully cleared -> FX_DIFFERENCE'
+                   FROM FXF f WHERE A.bank_txn_id = f.bank_txn_id AND A.item_id = f.item_id""")
     con.execute(f"COPY NEW TO '{w}/cnfx_new.parquet' (FORMAT parquet)")
     con.execute(f"COPY A TO '{p}.tmp' (FORMAT parquet)")
     os.replace(f"{p}.tmp", p)
     print(con.sql("SELECT rule, count(DISTINCT bank_txn_id) lines, count(*) pairs FROM NEW GROUP BY 1 ORDER BY 3 DESC").fetchall())
+    print(f"[{phase}] cnfx: FX_DIFFERENCE set on {con.sql('SELECT count(*) FROM FXF').fetchall()[0][0]} rows")
     print(f"[{phase}] cnfx → {p} ({time.time() - t0:.0f}s)")
 
 
