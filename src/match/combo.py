@@ -17,6 +17,7 @@ CAP_ARC = 4       # most recent credit notes per line (negative), on top of CAP
 DUE_LO, DUE_HI = -120, 14
 AGE_MAX = 200
 K_MIN = 2
+PARTY_RANKS, PARTY_MIN = 3, 0.2   # T4 candidates tried; the line is kept only if exactly one party gives exactly one subset
 
 
 def _sums(vals):
@@ -62,27 +63,51 @@ def _pass(con, with_arc):
     rows = con.sql(f"""
         WITH taken AS (SELECT item_id FROM SL UNION SELECT item_id FROM REFP UNION SELECT item_id FROM AMTP
                        UNION SELECT unnest(items) FROM CS),
+             lines AS (   -- (line, party, remainder): CB lines with a referenced base, plus every T4 candidate party
+               SELECT cb.bank_txn_id, cb.party_id, cb.rem, 1 AS rank FROM CB cb WHERE cb.has_base
+               UNION ALL
+               SELECT lt.bank_txn_id, p.party_id, lt.cash, p.rank
+               FROM LT lt JOIN P p USING (bank_txn_id)
+               WHERE p.rank <= {PARTY_RANKS} AND p.confidence >= {PARTY_MIN}
+                 AND lt.bank_txn_id NOT IN (SELECT bank_txn_id FROM REFP)
+                 AND lt.bank_txn_id NOT IN (SELECT bank_txn_id FROM AMTP)),
              cand AS (
-               SELECT cb.bank_txn_id, cb.rem, i.item_id,
+               SELECT ln.bank_txn_id, ln.party_id, ln.rem, i.item_id,
                       CASE WHEN i.kind = 'ARC' THEN -i.open_at_start_cents ELSE i.open_at_start_cents END AS v
-               FROM CB cb JOIN LT lt USING (bank_txn_id)
-               JOIN IO i ON i.party_id = cb.party_id AND i.currency = lt.currency AND i.entity = lt.entity
+               FROM lines ln JOIN LT lt USING (bank_txn_id)
+               JOIN IO i ON i.party_id = ln.party_id AND i.currency = lt.currency AND i.entity = lt.entity
                     AND i.kind IN {kinds} AND i.issue_date <= lt.booking_date
                     AND lt.booking_date - i.issue_date <= {AGE_MAX}
                     AND (i.kind = 'ARC' OR i.due_date BETWEEN lt.booking_date + ({DUE_LO}) AND lt.booking_date + {DUE_HI})
-               WHERE lt.direction = 'IN' AND cb.rem > 0
-                 AND cb.bank_txn_id NOT IN (SELECT bank_txn_id FROM CS)
+               WHERE lt.direction = 'IN' AND ln.rem > 0
+                 AND ln.bank_txn_id NOT IN (SELECT bank_txn_id FROM CS)
                  AND i.item_id NOT IN (SELECT item_id FROM taken)
-               QUALIFY row_number() OVER (PARTITION BY cb.bank_txn_id, i.kind ORDER BY i.issue_date DESC, i.item_id)
+               QUALIFY row_number() OVER (PARTITION BY ln.bank_txn_id, ln.party_id, i.kind ORDER BY i.issue_date DESC, i.item_id)
                        <= CASE WHEN i.kind = 'ARC' THEN {CAP_ARC} ELSE {CAP} END)
-        SELECT bank_txn_id, any_value(rem), list(item_id ORDER BY item_id), list(v ORDER BY item_id)
-        FROM cand GROUP BY 1 HAVING count(*) >= {K_MIN}""").fetchall()
-    out = []
-    for bt, rem, ids, vals in rows:
+        SELECT bank_txn_id, party_id, any_value(rem), list(item_id ORDER BY item_id), list(v ORDER BY item_id)
+        FROM cand GROUP BY 1, 2 HAVING count(*) >= {K_MIN}
+        ORDER BY 1, 2""").fetchall()
+    out, parties, cur, sols, bad = [], {}, None, [], False
+    def flush():
+        if cur is not None and not bad and len(sols) == 1 and len(sols[0][1]) >= K_MIN:
+            out.append((cur, sols[0][1], len(sols[0][1])))
+            parties[cur] = sols[0][0]
+    for bt, party, rem, ids, vals in rows:      # ordered by line: one line's parties come together
+        if bt != cur:
+            flush()
+            cur, sols, bad = bt, [], False
+        if bad:
+            continue
         k, sol = solve(np.array(vals, dtype=np.int64), int(rem))
-        if k == 1 and len(sol) >= K_MIN:
-            out.append((bt, [ids[i] for i in sol], len(sol)))
+        if k == 1:
+            sols.append((party, [ids[i] for i in sol]))
+        elif k > 1:
+            bad = True                          # ambiguous for one candidate party: give the line up
+    flush()
     if out:
         con.executemany("INSERT INTO CS VALUES (?, ?, ?, true)", out)
+        con.executemany("""INSERT INTO CB SELECT ?, ?, 0, lt.cash, false FROM LT lt WHERE lt.bank_txn_id = ?
+                           AND lt.bank_txn_id NOT IN (SELECT bank_txn_id FROM CB)""",
+                        [(bt, parties[bt], bt) for bt, _, _ in out])
     print(f"  comb mitm{' +ARC' if with_arc else ''}: {len(rows)} lines tried, {len(out)} unique solutions, {sum(k for _, _, k in out)} pairs")
     return len(out)
