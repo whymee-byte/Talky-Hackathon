@@ -47,6 +47,10 @@ step "two receipts (T13d)" $PY -u -m src.twopay --phase "$PHASE"
 step "unidentified"     $PY -u -m src.unident     --phase "$PHASE"
 [[ -n "${NO_CNFX:-}" ]] || step "credit notes / FX sets" $PY -u -m src.cnfx --phase "$PHASE"
 step "due invoices on long receipts (T20)" $PY -u -m src.duefill --phase "$PHASE"
+step "payer subset gap (T16)" $PY -u -m src.refgap --phase "$PHASE"
+step "credit-note units (T16)" $PY -u -m src.cnrest --phase "$PHASE"
+step "credit-note runs (T21)" $PY -u -m src.cnfill --phase "$PHASE"
+step "late discount / FX orig (T21)" $PY -u -m src.fxlate --phase "$PHASE"
 step "last exception fixes (T15)" $PY -u -m src.excfix --phase "$PHASE"
 if [[ "$PHASE" == "window" || "$PHASE" == "sample" ]]; then
   step "write + score" $PY -u -m src.submit --phase "$PHASE" --from "work/$PHASE/allocations.parquet" --score
