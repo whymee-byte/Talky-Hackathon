@@ -58,6 +58,7 @@ step "due invoices on long receipts (T20)" $PY -u -m src.duefill --phase "$PHASE
 [[ -n "${NO_T3G:-}" ]] || step "tolerant matches (T3g)" $PY -u -m src.tolmatch --phase "$PHASE"
 [[ -n "${NO_T3G:-}" ]] || step "complete-PO combos (T22)" $PY -u -m src.pocomb --phase "$PHASE"
 [[ -n "${NO_T3G:-}" ]] || step "delay profile combos (T21b)" $PY -u -m src.delaycomb --phase "$PHASE"
+[[ -n "${NO_T3G:-}" ]] || step "live-invoice combos + pair model (T24)" $PY -u -m src.agecomb --phase "$PHASE"
 step "more credit notes (T19)" $PY -u -m src.cnmore --phase "$PHASE"
 step "payer subset gap (T16)" $PY -u -m src.refgap --phase "$PHASE"
 step "credit-note units (T16)" $PY -u -m src.cnrest --phase "$PHASE"

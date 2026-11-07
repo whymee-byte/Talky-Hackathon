@@ -9,7 +9,7 @@ party's invoices issued LATER and already settled by an earlier line: golden q95
 Candidates = T4 rank-1 party's open AR invoices, same currency, issued <= booking date, age <= AGE_MAX, skips <= SKIP_MAX,
 not settled by an earlier line of the phase. If exactly ONE subset sums to the cash (meet-in-the-middle, <= MAX_CAND)
 the line settles it with no exception. Items solved in a pass count as settled for the next pass (fewer candidates
-for the other lines). Audit: rule 'T23.agecomb', confidence, evidence.
+for the other lines). Audit: rule 'T24.agecomb', confidence, evidence.
 """
 import argparse
 import collections
