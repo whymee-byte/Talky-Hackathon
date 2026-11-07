@@ -127,9 +127,9 @@ def build(phase: str, data: str | None = None, steps: list[str] | None = None, o
                    count(*) over (partition by p.run_id, p.e2e, p.doc_c, p.doc_cents) ncand
             from PR p
             join I i on i.doc_c = p.doc_c and i.currency = p.currency and i.kind = case when p.doc_cents < 0 then 'APC' else 'API' end
-                     and (i.entity = p.fent or {fact})
             left join SUP s on s.name_c = p.ben_c and s.entity = i.entity
-            left join SUP si on si.iban = p.iban and si.entity = i.entity)
+            left join SUP si on si.iban = p.iban and si.entity = i.entity
+            where i.entity = p.fent or {fact})
           where rn = 1 and (sup_name or sup_iban or ncand = 1 or abs(doc_cents) = total_cents)""")
         stats["pr_rows"] = con.sql("select count(*) from PR").fetchall()[0][0]
         stats["pr_rows_item"] = con.sql("select count(*) from PRI").fetchall()[0][0]
@@ -237,15 +237,23 @@ def build(phase: str, data: str | None = None, steps: list[str] | None = None, o
             select c.*, i.item_id, i.total_cents, i.open_c, i.party_id,
                    case when i.doc_c = c.ref_c then 'doc_exact'
                         when length(c.ref_c) >= 5 and (suffix(i.doc_c, c.ref_c) or suffix(i.doc_digits, c.ref_c)) then 'doc_suffix'
-                        when cu.customer_id is not null then 'drawer' end how,
+                        when cu.name_c = c.drawer_c or cu.trade_c = c.drawer_c then 'drawer'
+                        when length(c.drawer_c) >= 6 and (left(cu.name_c, 8) = left(c.drawer_c, 8) or contains(c.drawer_c, cu.name_c)
+                                                          or contains(cu.name_c, c.drawer_c)) then 'drawer_fuzzy'
+                        else 'amount' end how,
                    row_number() over (partition by c.deposit_id, c.acct, c.cheque_number order by
-                       case when i.doc_c = c.ref_c then 0 when length(c.ref_c) >= 5 and (suffix(i.doc_c, c.ref_c) or suffix(i.doc_digits, c.ref_c)) then 1 else 2 end,
-                       (cu.customer_id is not null) desc, (i.total_cents = c.cents) desc, i.issue_date) rn,
+                       case when i.doc_c = c.ref_c then 0
+                            when length(c.ref_c) >= 5 and (suffix(i.doc_c, c.ref_c) or suffix(i.doc_digits, c.ref_c)) then 1
+                            when cu.name_c = c.drawer_c or cu.trade_c = c.drawer_c then 2
+                            when length(c.drawer_c) >= 6 and (left(cu.name_c, 8) = left(c.drawer_c, 8) or contains(c.drawer_c, cu.name_c)
+                                                              or contains(cu.name_c, c.drawer_c)) then 3 else 4 end,
+                       (i.total_cents = c.cents) desc, (i.open_c > 0) desc, i.issue_date) rn,
                    count(*) over (partition by c.deposit_id, c.acct, c.cheque_number) ncand
-            from CHQ c join I i on i.entity = c.fent and i.kind = 'ARI' and i.currency = c.currency
-                 and (i.total_cents = c.cents or i.open_c = c.cents)
-            left join CUS cu on cu.customer_id = i.party_id and (cu.name_c = c.drawer_c or cu.trade_c = c.drawer_c))
-          where rn = 1 and how is not null and (how <> 'drawer' or ncand = 1)""")
+            from CHQ c join (select i.* from I i where i.kind = 'ARI' and i.total_cents = i.open_c
+                             union all select i.* from I i where i.kind = 'ARI' and i.total_cents <> i.open_c) i
+                 on i.entity = c.fent and i.currency = c.currency and c.cents = case when i.total_cents = i.open_c then i.total_cents else i.open_c end
+            left join CUS cu on cu.customer_id = i.party_id)
+          where rn = 1 and (how in ('doc_exact', 'doc_suffix', 'drawer') or ncand = 1)""")
         con.sql(f"""create table QU as
           with u as (select deposit_id, acct, d, any_value(total) total from CHQ group by 1, 2, 3),
           c as (select u.*, l.bank_txn_id, l.booking_date, abs(l.booking_date - u.d) dd,
@@ -259,7 +267,7 @@ def build(phase: str, data: str | None = None, steps: list[str] | None = None, o
         con.sql("create table QU1 as select * from QU qualify row_number() over (partition by bank_txn_id order by conf desc, dd) = 1")
         con.sql("""insert into OUT
           select u.bank_txn_id, r.item_id, r.cents, '', 'T2b.cheque', u.deposit_id,
-                 u.conf * case r.how when 'doc_exact' then 1.0 when 'doc_suffix' then 0.98 else 0.9 end,
+                 u.conf * case r.how when 'doc_exact' then 1.0 when 'doc_suffix' then 0.98 when 'drawer' then 0.95 else 0.9 end,
                  'deposit=' || u.deposit_id || '; ' || u.how || '; cheque=' || r.cheque_number || '; ' || r.how || '; stub=' || r.ref_c || '; amt=' || r.cents
           from QU1 u join CHQI r on r.deposit_id = u.deposit_id and r.acct = u.acct
           qualify row_number() over (partition by u.bank_txn_id, r.item_id order by r.cents desc) = 1""")

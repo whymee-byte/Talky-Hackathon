@@ -9,3 +9,4 @@
 12:59 CLAIM T9 preparación de FINAL (src/final/run_final.sh sin red + docs/FINAL_CHECKLIST.md); ensayo cronometrado con LIVE
 12:59 NOTE T7 en LIVE: 52,40 → 55,15 (fichero con T3 v3 + T7).
 12:59 NOTE T2b paso 1 (payment_runs transfers+aggregated+devoluciones): ventana P 100 % / R 100 % ap_payment_multi·single·credit_note_netted·partial, 99,99 % paid_by_holding, 97,6 % ap_fx, 97,1 % ap_factored, 91 % ap_returned_transfer → work/<fase>/side_links_ap.parquet
+13:22 NOTE T2b paso 2 (tarjetas y cheques): ventana ar_card_settlement P 100 / R 100, ar_card_chargeback 100/100, ar_cheque_deposit 99,97/99,97, ar_cheque_returned 97,9/95,8
