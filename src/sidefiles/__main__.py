@@ -119,7 +119,7 @@ def resolve_receipts(con, src_table: str, out_table: str):
              (i.doc_norm = r.ref_norm or i.doc_norm = replace(r.ref_norm, ' ', '')) doc_exact,
              (r.ref_digits is not null and (i.doc_digits = r.ref_digits
                or (length(r.ref_digits) >= 6 and ends_with(i.doc_digits, r.ref_digits))
-               -- last number group of the reference = last number group of the document (RECIBO 22311 ~ FT24-01-22311)
+               -- last number group of the reference = last number group of the document (RECIBO 12345 ~ XX99-01-12345)
                or (r.ref_tail is not null and regexp_extract(i.doc_norm, '(?:^| )([0-9]+)$', 1) = r.ref_tail))) doc_digits,
              (i.open_at_start_cents = r.amount_cents or i.total_cents = r.amount_cents) amt_ok,
              i.issue_date
