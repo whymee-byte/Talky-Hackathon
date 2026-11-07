@@ -26,7 +26,11 @@ PHASE=${1:?uso: src/final/run_final.sh <sample|window|live|final>}
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$REPO"
 PY=${PY:-"$REPO/.venv/bin/python"}
-[[ -x "$PY" ]] || PY=python3
+if [[ "$PY" == */* || "$PY" == *\\* ]]; then
+  [[ -x "$PY" ]] || PY=python3
+else
+  command -v "$PY" >/dev/null 2>&1 || PY=python3
+fi
 W="work/$PHASE"
 mkdir -p "$W" out
 LOG="$W/final_run.log"
