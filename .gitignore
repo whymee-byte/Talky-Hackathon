@@ -1,0 +1,6 @@
+.venv/
+data/
+out/
+*.csv.gz
+__pycache__/
+.env
