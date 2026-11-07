@@ -17,6 +17,8 @@ anywhere in the phase are never reused, and an item picked by two lines is given
           A line is accepted only when exactly one solution exists.
           A bigger pool with no run: subsets of the items due in windows around the booking date (WINDOWS) small
           enough for the exact search, unique over all windows (rule T3x.win.*; never with a credit note).
+          Several subset solutions (<= 5): the only one whose items are all already due (rule *_due; runner-up
+          parties only without credit notes).
           An item picked by two lines goes to the stronger search (subset > run > win, rank 1 > alt) or to neither.
   rows    every item at its full open amount; invoices of an FX line carry FX_DIFFERENCE, credit notes no exception.
 Rule ids T3x.<search>.<cn|fx|plain>[.add], confidence by search kind, evidence = pool size, solution size, target.
@@ -43,6 +45,7 @@ ALT_RANKS = 3      # T4 ranks tried when rank 1 has no solution (0 = off)
 ALT_MIN_CONF = 0.0
 WINDOWS = [(b, 0) for b in (31, 62, 93)]   # items already due, up to 1-3 months back (wider: window SCORE lower)
 WIN_CN = False
+MULTI_DUE = True
 FIFO_TIES = False  # (window: ~45 % right, off)
 AMT_UNIQUE = False  # unique exact amount in the entity, any party: window 17 % right, breaks UNIDENTIFIED (off)  # solutions that differ only by same-amount items -> the oldest items
 PRIO = "CASE split_part(how, '_', 1) WHEN 'subset' THEN 0 WHEN 'run' THEN 1 WHEN 'win' THEN 2 ELSE 6 END + CASE WHEN how LIKE '%_alt' THEN 3 ELSE 0 END"
@@ -171,6 +174,7 @@ def build(phase: str, alloc: str | None = None, rules: str = DEFAULT_RULES, work
                      ORDER BY 1, p.grp <> 'p1', 2""").df()
     print(f"[{phase}] cnfx: {con.sql('SELECT count(*) FROM LT').fetchall()[0][0]} target lines, {len(df)} pools "
           f"({time.time() - t0:.0f}s)")
+    df_dd = {(r.bank_txn_id, r.grp): r.dd for r in df.itertuples(index=False)}
     sols = {}   # line -> list of (grp, how, n, selection)
     diag = []
     for b, grp, rem, ids, v, n, dd in df.itertuples(index=False):
@@ -190,7 +194,16 @@ def build(phase: str, alloc: str | None = None, rules: str = DEFAULT_RULES, work
     for b, lst in sols.items():
         p1 = [x for x in lst if x[0] == "p1"]
         cand = p1 if p1 else [x for x in lst if x[0] != "p1"]
-        if not cand or (len(cand) > 1 and not FIFO_TIES):
+        if not cand:
+            continue
+        if len(cand) > 1 and MULTI_DUE:
+            # several solutions: the only one whose items are all already due
+            dds = {id(c): np.asarray(df_dd[(b, c[0])])[c[4]] for c in cand}
+            due = [c for c in cand if (dds[id(c)] <= 0).all() and c[1] == "subset"
+                   and (c[0] == "p1" or (np.asarray(c[6])[c[4]] > 0).all())]
+            if len(due) == 1 and len(cand) <= 5:
+                cand = [due[0][:1] + (due[0][1] + "_due",) + due[0][2:]]
+        if len(cand) > 1 and not FIFO_TIES:
             continue
         if len(cand) > 1:
             # several solutions that only swap items of the same amount: the oldest ones (pool is in issue order)
@@ -207,7 +220,7 @@ def build(phase: str, alloc: str | None = None, rules: str = DEFAULT_RULES, work
     P = pd.DataFrame(picks, columns=["bank_txn_id", "item_id", "how", "n", "k", "rem"])
     con.register("Pdf", P)
     con.execute("CREATE TABLE PICK AS SELECT * FROM Pdf")
-    con.execute(f"DELETE FROM PICK WHERE replace(how, '_fifo', '') NOT IN ({', '.join(repr(r) for r in keep) or 'NULL'})")
+    con.execute(f"DELETE FROM PICK WHERE replace(replace(how, '_fifo', ''), '_due', '') NOT IN ({', '.join(repr(r) for r in keep) or 'NULL'})")
     if AMT_UNIQUE:
         # receipts with no item still unsolved: the only open invoice of the entity (any party) whose open amount is
         # the cash, if no other unsolved receipt wants it
