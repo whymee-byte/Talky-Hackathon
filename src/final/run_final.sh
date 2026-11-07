@@ -99,25 +99,52 @@ step() {
 have() { [[ -f "src/$1/__main__.py" ]]; }
 
 # ---------- pipeline ----------
-step T1_base_parquet req "$PY" -m src.base_parquet --phase "$PHASE" --data "$HK_DATA"
-step T2_sidefiles    req "$PY" -m src.sidefiles    --phase "$PHASE" --data "$HK_DATA"
-if have sidefiles_ap; then step T2b_sidefiles_ap opt "$PY" -m src.sidefiles_ap --phase "$PHASE" --data "$HK_DATA"; fi
+# Score-critical stages are required when their module exists. A missing module
+# is the only supported fallback. Failed or stale stages must not be accepted.
+run_stage() {
+  local module=$1 name=$2; shift 2
+  if have "$module"; then
+    step "$name" req "$PY" -u -m "src.$module" --phase "$PHASE" "$@"
+  else
+    say "AVISO: módulo ausente src/$module; continúo con fallback determinista"
+    FAILED_OPT+=("$name:module-missing")
+  fi
+}
+
+step T1_base_parquet req "$PY" -u -m src.base_parquet --phase "$PHASE" --data "$HK_DATA"
+step T2_sidefiles    req "$PY" -u -m src.sidefiles    --phase "$PHASE" --data "$HK_DATA"
+run_stage sidefiles_ap T2b_sidefiles_ap --data "$HK_DATA"
+run_stage sidemerge T2c_sidemerge
+run_stage remit T6_remit
 if [[ "$PHASE" == final ]]; then
-  step T4_party req "$PY" -m src.party --phase "$PHASE" --relearn      # aprende con train + live + final
+  run_stage party T4_party --relearn
 else
-  step T4_party req "$PY" -m src.party --phase "$PHASE"
+  run_stage party T4_party
 fi
-if have remit;   then step T6_remit   opt "$PY" -m src.remit   --phase "$PHASE"; fi
-if have nonitem; then step T7_nonitem opt "$PY" -m src.nonitem --phase "$PHASE"; fi
-if [[ "${FINAL_T8:-0}" == 1 ]] && have pdffacts; then step T8_pdffacts opt "$PY" -m src.pdffacts --phase "$PHASE"; fi
-step T3_match req "$PY" -m src.match --phase "$PHASE"
-if [[ "${FINAL_T5:-0}" == 1 ]] && have exceptions; then step T5_exceptions opt "$PY" -m src.exceptions --phase "$PHASE" --data "$HK_DATA"; fi
+run_stage fuzzref T3f_fuzzref
+run_stage nonitem T7_nonitem
+run_stage match T3_match
+run_stage exceptions T5_exceptions --data "$HK_DATA"
+run_stage postfix T5b_postfix
 
 SHA=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo nogit)
 OUT="out/${PHASE}_$(date +%Y%m%d-%H%M)_${SHA}.csv.gz"
-step submit   req "$PY" -m src.submit --phase "$PHASE" --data "$HK_DATA" --from "$W/allocations.parquet" --out "$OUT"
-step validate req "$PY" tools/validate.py "$OUT" --phase "$PHASE" --data "$HK_DATA"
-step report   opt "$PY" -m src.final.report --phase "$PHASE" --submission "$OUT" --data "$HK_DATA"
+step submit   req "$PY" -u -m src.submit --phase "$PHASE" --data "$HK_DATA" --from "$W/allocations.parquet" --out "$OUT"
+step validate req "$PY" -u tools/validate.py "$OUT" --phase "$PHASE" --data "$HK_DATA"
+step coverage req "$PY" - "$OUT" "$PHASE" "$HK_DATA" <<'PY'
+import sys
+from tools import validate
+
+result = validate.validate_file(sys.argv[1], sys.argv[2], sys.argv[3])
+missing = result["txns_missing"]
+if missing:
+    raise SystemExit(
+        f"phase coverage failed: {missing} transaction(s) missing "
+        f"({result['txns_covered']}/{result['txns_total']} covered)"
+    )
+print(f"phase coverage ok: {result['txns_covered']}/{result['txns_total']} transactions covered")
+PY
+step report   opt "$PY" -u -m src.final.report --phase "$PHASE" --submission "$OUT" --data "$HK_DATA"
 
 # ---------- resumen ----------
 DT=$(( $(date +%s) - T_ALL ))
