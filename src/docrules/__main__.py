@@ -14,7 +14,7 @@ Reads work/<phase>/{allocations,lines,items,line_party,doc_facts}.parquet and re
              currency, an amount the PDF/terms imply (instalment k, total − retention, retention, total − advance,
              total − late discount, a usual partial share of the total) → that invoice
   add_rest   then: UNIDENTIFIED receipt = remaining balance of a partly paid invoice of the payer → that invoice
-Partial shares are learned from golden PARTIAL rows of TRAIN lines outside the phase (never the scored lines).
+Partial shares are learned from TRAIN golden `ar_partial` PARTIAL rows on lines outside the phase (never the scored lines).
 """
 from __future__ import annotations
 
@@ -221,22 +221,21 @@ def build(phase: str, skip: set[str], work: str | None = None) -> dict:
 
 
 def _learn_shares(con, w: str) -> list[float]:
-    """Usual first-payment shares of the total (PARTIAL on a single-invoice line), from TRAIN golden rows whose lines
-    are not in this phase: shares round to the percent that cover >= 2 % of such rows."""
-    g = os.path.join(data_root(), "train", "golden_allocations.csv.gz").replace(os.sep, "/")
-    return _shares_from_items(con, g, w) if os.path.exists(g) else []
-
-
-def _shares_from_items(con, g: str, w: str) -> list[float]:
-    # invoice totals from this phase's items: invoices paid in two steps across the phase start are enough to learn
-    rows = con.sql(f"""
-      WITH g AS (SELECT bank_txn_id, item_id, coalesce(exception, '') exc, round(amount::DOUBLE * 100)::BIGINT amt
+    """Usual first-payment shares of the invoice total, learned from TRAIN golden PARTIAL rows of the unplanned-partial
+    segment (`ar_partial`) on lines outside this phase, with TRAIN invoice totals: shares round to the percent that
+    cover >= 2 % of those rows. Same table in every phase (window learns only from lines before/after the window)."""
+    tr = os.path.join(data_root(), "train").replace(os.sep, "/")
+    g, inv = f"{tr}/golden_allocations.csv.gz", f"{tr}/ar_invoices.csv.gz"
+    if not (os.path.exists(g) and os.path.exists(inv)):
+        return []
+    rows = con.execute(f"""
+      WITH g AS (SELECT bank_txn_id, item_id, round(amount::DOUBLE * 100)::BIGINT amt
                  FROM read_csv('{g}', all_varchar = true)
-                 WHERE bank_txn_id NOT IN (SELECT bank_txn_id FROM '{w}/lines.parquet') AND item_id LIKE 'ARI%'),
-           s AS (SELECT bank_txn_id FROM g GROUP BY 1 HAVING count(*) = 1),
-           p AS (SELECT round(g.amt / i.total_cents, 2) r, g.amt = round(i.total_cents * round(g.amt / i.total_cents, 2)) exact
-                 FROM g JOIN s USING (bank_txn_id) JOIN I i USING (item_id) WHERE g.exc = 'PARTIAL'
-                   AND coalesce(i.discount_pct, 0) = 0 AND i.item_id NOT IN (SELECT item_id FROM IF_))
+                 WHERE segment = 'ar_partial' AND exception = 'PARTIAL'
+                   AND bank_txn_id NOT IN (SELECT bank_txn_id FROM '{w}/lines.parquet')),
+           t AS (SELECT item_id, round(total_amount::DOUBLE * 100)::BIGINT total_c FROM read_csv('{inv}', all_varchar = true)),
+           p AS (SELECT round(g.amt / t.total_c, 2) r, g.amt = round(t.total_c * round(g.amt / t.total_c, 2)) exact
+                 FROM g JOIN t USING (item_id) WHERE t.total_c > 0)
       SELECT r FROM p WHERE exact AND r > 0 AND r < 1 GROUP BY r HAVING count(*) >= 0.02 * (SELECT count(*) FROM p)
       ORDER BY r""").fetchall()
     return [r for (r,) in rows]
