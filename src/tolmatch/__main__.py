@@ -220,7 +220,36 @@ def complete(con, w, phase):
           f"(candidate lines {con.sql('SELECT count(*) FROM LS').fetchall()[0][0]}, {time.time() - t0:.0f}s)")
 
 
+def overfix(phase):
+    """Last step (after src.excfix): an OVERPAYMENT whose excess over the item is neither a whole number of currency
+    units nor exactly 1 % / 10 % of it is a line that pays more than this item -> no exception (the pair is kept).
+    TRAIN < 2024-07: genuine overpayments have that excess shape; window: keeps 320/320 T5.overpayment hits and drops
+    125 of its 126 false positives."""
+    w = f"work/{phase}"
+    con = duckdb.connect()
+    con.execute(f"""CREATE TABLE A AS SELECT * FROM '{w}/allocations.parquet'""")
+    con.execute(f"""CREATE TABLE X AS
+      SELECT a.bank_txn_id, a.item_id FROM A a JOIN '{w}/lines.parquet' l USING (bank_txn_id)
+      JOIN '{w}/items.parquet' i USING (item_id)
+      WHERE a.exception = 'OVERPAYMENT' AND i.currency = l.currency
+        AND NOT ((abs(l.amount_cents) - a.amount_cents) % 100 = 0
+                 OR abs((abs(l.amount_cents) - a.amount_cents) - round(a.amount_cents * 0.01)) <= 1
+                 OR abs((abs(l.amount_cents) - a.amount_cents) - round(a.amount_cents * 0.10)) <= 1)""")
+    con.execute(f"""COPY (
+      SELECT a.* REPLACE (
+        CASE WHEN x.item_id IS NOT NULL THEN '' ELSE a.exception END AS exception,
+        CASE WHEN x.item_id IS NOT NULL THEN coalesce(a.rule, '') || '+T3g.overfix' ELSE a.rule END AS rule)
+      FROM A a LEFT JOIN X x ON x.bank_txn_id = a.bank_txn_id AND x.item_id = a.item_id
+    ) TO '{w}/allocations.parquet' (FORMAT parquet)""")
+    print(f"[{phase}] T3g overfix: {con.sql('SELECT count(*) FROM X').fetchall()[0][0]} OVERPAYMENT -> no exception")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", required=True, choices=["sample", "window", "live", "final"])
-    build(ap.parse_args().phase)
+    ap.add_argument("--overfix", action="store_true", help="only the final OVERPAYMENT shape check (after excfix)")
+    a = ap.parse_args()
+    if a.overfix:
+        overfix(a.phase)
+    else:
+        build(a.phase)

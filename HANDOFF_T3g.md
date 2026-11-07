@@ -50,3 +50,9 @@ Informe de fallos de la base 93,32: `FAIL_REPORT_933.md` (generado con `tools/an
 Hallazgo: `ar_short_dispute` pierde 31.838 pares (~1 punto) en 378 cobros grandes **sin aviso de pago en los datos**
 (comprobado por nº de factura, importe y fechas); pagan ~56 de ~728 facturas abiertas sin bloque por emisión ni
 vencimiento → no recuperable sin el aviso.
+
+## 4. `--overfix` (paso final, después de excfix)
+Un OVERPAYMENT cuyo exceso sobre la partida no es un importe entero ni exactamente el 1 %/10 % es un cobro que paga
+más partidas → sin excepción (se conserva el par). Ventana 3fd558e: 93,37 → **93,50**; OVERPAYMENT F1 0,737 → 0,834
+(FP 210 → 94; en T5.overpayment conserva 320/320 aciertos y quita 125 de 126 falsos). Total de esta rama sobre la
+base 93,32: **+0,18**. Paso en run_phase.sh: `step "overpayment shape (T3g)" ... src.tolmatch --overfix`.
