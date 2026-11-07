@@ -7,8 +7,9 @@ __pycache__/
 data_cache/
 work/
 .DS_Store
-sample/
-train/
-live/
-final/
+/sample/
+/train/
+/live/
+/final/
 ._*
+logs/
