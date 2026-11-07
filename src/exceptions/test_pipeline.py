@@ -133,7 +133,7 @@ class MergePriorityTests(unittest.TestCase):
                 "booking_date": [date(2025, 1, 10)] * 2,
                 "line_amount_cents": [15000, 15000], "line_currency": ["EUR", "EUR"],
                 "item_currency": ["EUR", "EUR"], "open_before_cents": [10000, 10000],
-                "cash_cents": [7000, 10000], "doc_hint": [None, None],
+                "cash_cents": [7000, 7000], "doc_hint": [None, None],
                 "rule": ["T3.mock", "T3.mock"], "confidence": [1.0, 1.0],
                 "evidence": ["mock", "mock"],
             },
@@ -143,8 +143,26 @@ class MergePriorityTests(unittest.TestCase):
             {"item_id": ["ARI-P1", "ARI-P2"], "kind": ["ARI", "ARI"],
              "total_cents": [10000, 10000], "currency": ["EUR", "EUR"]},
         ).sort("item_id")
-        self.assertEqual(out["exception"].to_list(), ["PARTIAL", None])
-        self.assertEqual(out["amount_cents"].to_list(), [7000, 10000])
+        self.assertEqual(out["exception"].to_list(), ["PARTIAL", "PARTIAL"])
+        self.assertEqual(out["amount_cents"].to_list(), [7000, 7000])
+
+    def test_returned_collection_represented_on_reopened_balance_is_normal(self):
+        out = self._base_inputs(
+            {
+                "bank_txn_id": ["BT-REPRESENT"], "item_id": ["ARI-REPRESENT"],
+                "booking_date": [date(2025, 1, 10)], "line_amount_cents": [6000],
+                "line_currency": ["EUR"], "item_currency": ["EUR"],
+                "open_before_cents": [10000], "cash_cents": [6000], "doc_hint": [None],
+                "rule": ["T3.mock"], "confidence": [1.0], "evidence": ["mock"],
+            },
+            {"bank_txn_id": ["BT-REPRESENT"], "amount_cents": [6000],
+             "booking_date": [date(2025, 1, 10)], "currency": ["EUR"],
+             "direction": ["IN"], "is_return_hint": [True]},
+            {"item_id": ["ARI-REPRESENT"], "kind": ["ARI"],
+             "total_cents": [10000], "currency": ["EUR"]},
+        )
+        self.assertEqual(out["exception"].to_list(), ["PARTIAL"])
+        self.assertEqual(out["amount_cents"].to_list(), [6000])
 
 
 if __name__ == "__main__":

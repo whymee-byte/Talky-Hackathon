@@ -138,8 +138,8 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
     # Populate the policy decision from grouped pair features. Keep rules auditable at row granularity.
     con.execute("""CREATE TEMP TABLE R AS SELECT *,
        CASE
-       WHEN reverse_direction OR (coalesce(is_return_hint, false) AND NOT normal_direction) THEN 'RETURNED'
-       -- a line that re-pays a returned collection ("RECIBO DEVUELTO …" in the normal direction) is a plain payment
+       WHEN reverse_direction OR (coalesce(is_return_hint, false) AND open_before_cents<=0) THEN 'RETURNED'
+       -- A returned collection re-presented against a reopened balance is a normal payment.
        WHEN open_before_cents<=0 AND normal_direction THEN 'DUPLICATE_PAYMENT'
        WHEN is_fx AND kind IN ('ARI','API') AND fx_band THEN 'FX_DIFFERENCE'
        WHEN NOT is_fx AND kind='ARI' AND discount_ok THEN 'SHORT_DISCOUNT'
@@ -152,23 +152,19 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
        ELSE '' END exception_code
       FROM (SELECT *, sum(CASE WHEN wht_item_candidate THEN 1 ELSE 0 END)
                       OVER (PARTITION BY bank_txn_id,item_cur) wht_item_candidates FROM D) W""")
-    # A partial is an item-level balance condition.  T3 supplies the applied amount
-    # for each pair, so do not infer an absorber from arbitrary fractions of the
-    # transaction total.  This keeps the decision aligned with POLICIES §3.
+    # A partial is an item-level balance condition. T3 supplies the applied amount
+    # for each pair, so every item left open after this line is PARTIAL. Do not
+    # infer a single absorber from the transaction total.
     con.execute("""CREATE TEMP TABLE A AS SELECT *,
       abs(line_cash_i) AS total_cash,
-      abs(signed_open_sum)-abs(line_cash_i) AS shortfall,
-      row_number() OVER (PARTITION BY bank_txn_id ORDER BY item_id) absorber_rank
+      abs(signed_open_sum)-abs(line_cash_i) AS shortfall
       FROM R""")
     con.execute("""CREATE TEMP TABLE FINAL AS SELECT *,
        CASE WHEN exception_code='PARTIAL' AND wht_item_candidates=1 AND kind IN ('ARI','API')
                   AND NOT wht_item_candidate THEN ''
             WHEN kind IN ('ARC','APC') AND exception_code NOT IN ('DUPLICATE_PAYMENT','RETURNED')
                   AND abs(applied_i-open_c)<=greatest(1,0.005*open_c) THEN ''
-            WHEN exception_code='PARTIAL' AND n_pair>1 AND kind IN ('ARI','API') AND
-          absorber_rank=1
-         THEN 'PARTIAL' WHEN exception_code='PARTIAL' AND n_pair>1 AND kind IN ('ARI','API') THEN ''
-         ELSE exception_code END final_exception,
+            ELSE exception_code END final_exception,
        CASE WHEN exception_code='DUPLICATE_PAYMENT' THEN abs(cash_i)
             WHEN exception_code='RETURNED' THEN abs(cash_i)
             WHEN exception_code IN ('SHORT_DISPUTE','PARTIAL') AND n_pair=1 THEN coalesce(applied_i,abs(cash_i))
