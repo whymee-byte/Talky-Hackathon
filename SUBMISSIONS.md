@@ -7,4 +7,4 @@ FINAL: un único envío válido.
 
 | # | Fecha y hora | Fase | Commit | Fichero | Hipótesis (qué cambia y por qué) | Ventana local | LIVE esperado | LIVE real | Estado | Confirmado por |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1 | | LIVE | | | Envío válido trivial (T0): pares exactos del starter + resto `UNIDENTIFIED`/`BANK_FEES`. Prueba el circuito. | | 10–19 | | | — |
+| 1 | PENDIENTE | LIVE | 3faff91+T0 | `python -m src.submit --phase live --trivial` → `out/live_<ts>_<sha>.csv.gz` | Envío válido trivial (T0): pares exactos del starter + resto `UNIDENTIFIED`/`BANK_FEES`. Prueba el circuito. Arnés listo; falta en esta máquina `data/live/` y `HK_TOKEN` (+ endpoints de `/enviar` en `HK_API`). `sample`: 11,28 (= starter). | — (sin `train/` en local) | 10–19 | | pendiente de subir | — |

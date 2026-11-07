@@ -36,7 +36,7 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
 ---
 
 ### T0 · Envío válido trivial + arnés
-- **Dueño:**
+- **Dueño:** ouyang
 - **Entradas:** `bank_transactions` de la fase; `allocations.parquet` cuando exista.
 - **Salidas:** `out/<fase>_<yyyymmdd-hhmm>_<sha>.csv.gz`, `out/<…>.score.json`; `tools/validate.py`, `tools/score.py`,
   `tools/submit.py` (envoltorio del script oficial de `/enviar`, token en `HK_TOKEN`).
