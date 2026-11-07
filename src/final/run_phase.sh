@@ -18,6 +18,7 @@ step "party"            $PY -u -m src.party        --phase "$PHASE"
 step "no-item category" $PY -u -m src.nonitem      --phase "$PHASE"
 step "matcher"          $PY -u -m src.match        --phase "$PHASE"
 step "exceptions"       $PY -u -m src.exceptions   --phase "$PHASE"
+step "exception fixes"  $PY -u -m src.postfix     --phase "$PHASE"
 if [[ "$PHASE" == "window" || "$PHASE" == "sample" ]]; then
   step "write + score" $PY -u -m src.submit --phase "$PHASE" --from "work/$PHASE/allocations.parquet" --score
 else

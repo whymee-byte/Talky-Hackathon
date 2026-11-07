@@ -7,6 +7,7 @@ remaining = open at start − what earlier lines of the phase applied to the ite
   partial_run T2 payment-run row on a supplier invoice that pays less than `remaining` → PARTIAL
   dup         T3/T5/T6 invoice row with nothing left to pay (remaining ≤ 0), no exception → DUPLICATE_PAYMENT
   last_part   PARTIAL row that pays the whole remaining balance → no exception (last instalment / remainder)
+  over_big    OVERPAYMENT whose cash exceeds the item by > 10 % → no exception (the line pays more than this item)
 Window (2024-07 → 2025-06): fx_run 2366 / 53 wrong · partial_run 5506 / 6 · dup 479 / 1 · last_part removes 7262 FP.
 """
 from __future__ import annotations
@@ -27,7 +28,7 @@ def build(phase: str) -> None:
     con = duckdb.connect()
     con.execute(f"CREATE TABLE A AS SELECT * FROM '{p}'")
     con.execute(f"""CREATE TABLE X AS
-      SELECT a.bank_txn_id, a.item_id, i.kind, i.currency icur, l.currency lcur, l.booking_date,
+      SELECT a.bank_txn_id, a.item_id, i.kind, i.currency icur, l.currency lcur, l.booking_date, abs(l.amount_cents) cash,
              i.open_at_start_cents - coalesce(sum(a.amount_cents) FILTER (WHERE coalesce(a.exception, '') NOT IN ('RETURNED', 'DUPLICATE_PAYMENT'))
                  OVER (PARTITION BY a.item_id ORDER BY l.booking_date, a.bank_txn_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) remaining
       FROM A a JOIN '{w}/items.parquet' i USING (item_id) JOIN '{w}/lines.parquet' l USING (bank_txn_id)
@@ -40,10 +41,12 @@ def build(phase: str) -> None:
              WHEN coalesce(a.exception, '') = '' AND x.kind IN ('ARI', 'API') AND x.remaining <= 0
                   AND (a.rule LIKE 'T3%' OR a.rule LIKE 'T5%' OR a.rule LIKE 'T6%') THEN 'DUPLICATE_PAYMENT'
              WHEN a.exception = 'PARTIAL' AND x.remaining > 0 AND a.amount_cents >= x.remaining - {TOL} THEN ''
+             WHEN a.exception = 'OVERPAYMENT' AND x.icur = x.lcur AND x.cash > 1.10 * greatest(x.remaining, 1) THEN ''
         END AS new_exc,
         CASE WHEN a.rule LIKE 'T2.run%' AND coalesce(a.exception, '') = '' AND x.icur <> x.lcur THEN 'fx_run'
              WHEN a.rule LIKE 'T2.run%' AND coalesce(a.exception, '') = '' THEN 'partial_run'
-             WHEN coalesce(a.exception, '') = '' THEN 'dup' ELSE 'last_part' END AS why
+             WHEN coalesce(a.exception, '') = '' THEN 'dup'
+             WHEN a.exception = 'OVERPAYMENT' THEN 'over_big' ELSE 'last_part' END AS why
       FROM A a JOIN X x USING (bank_txn_id, item_id)""")
     con.execute("DELETE FROM FIX WHERE new_exc IS NULL")
     print(con.sql("SELECT why, new_exc, count(*) FROM FIX GROUP BY ALL ORDER BY 3 DESC").fetchall())
