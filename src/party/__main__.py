@@ -11,7 +11,7 @@ import os
 import time
 
 from . import evaluate, learn, lines, resolve, truth
-from .common import connect
+from .common import RAW, connect
 
 
 def main():
@@ -20,6 +20,7 @@ def main():
     ap.add_argument("--no-fuzzy", action="store_true")
     ap.add_argument("--relearn", action="store_true")
     a = ap.parse_args()
+    os.environ["HK_PHASE"] = a.phase
     t0 = time.time()
     con = connect()
     need = ["learn", "window", a.phase] if a.phase != "window" else ["learn", "window"]
@@ -30,15 +31,20 @@ def main():
         truth.build(con)
     model = "pre_window" if a.phase == "window" else "full"
     if a.relearn or not os.path.exists(f"work/party_model/{model}/learned_keys.parquet"):
-        notices = ("train",) if model == "pre_window" else tuple(p for p in ("train", "live", "final")
-                                                                 if os.path.isdir(f"data/bankrec-docs-and-masters/{p}"))
+        notices = ("train",) if model == "pre_window" else tuple(
+            p for p in ("train", "live", "final") if os.path.isdir(f"{RAW}/{p}")
+        )
         learn.build(model, con, phases_for_notices=notices)
     con.close()
     out = resolve.run(a.phase, model, fuzzy=not a.no_fuzzy)
     print(f"{out} en {time.time() - t0:.0f}s")
     if a.phase == "window":
         from . import calibrate
-        calibrate.fit()
+        # Calibrate only from independent, pre-window predictions and labels.
+        # Never fit on the window output that is subsequently evaluated.
+        if not os.path.exists("work/train/line_party.parquet"):
+            resolve.run("train", "pre_window", fuzzy=not a.no_fuzzy)
+        calibrate.fit("work/train/line_party.parquet")
         calibrate.apply("window")
         evaluate.evaluate()
 
