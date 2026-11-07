@@ -36,6 +36,9 @@ Step 2 · item-row relabels, with the running balance:
                  → no exception: the earlier fuzzy allocation is the doubtful one, the window shows these rows are normal
   over_replaced  OVERPAYMENT on the replacement of a cancelled invoice ("anula y sustituye") → no exception (the
                  customer pays the old document; the replacement is cleared as documented)
+  disc_multi     multi-invoice receipt whose rows exceed the cash by exactly the early-payment discount of one
+                 untouched invoice: SHORT_DISCOUNT within terms + 12 days, PARTIAL at the net amount later (TRAIN:
+                 single-invoice receipts keep the 3-day grace of POLICIES §3, these receipts accept up to 12)
   remit_rest     remittance receipt whose advice rows were all prorated as PARTIAL (T6 short of the cash on every
                  document): TRAIN pays every document in full except one that takes the whole shortfall → full amounts,
                  no exception, and the newest invoice keeps PARTIAL at open − shortfall (newest: 55 % in TRAIN)
@@ -71,6 +74,8 @@ BC_EUR_STEP = 500          # bc_add on EUR lines: the fee is a whole multiple of
 OVER_MAX = 1.5             # whole-unit excess up to 50 % (TRAIN overpayments: whole units ≤ 2.1×, or exactly 1 % / 10 %)
 OVER_RATES = (1.01, 1.10)  # the two percentage overpayments seen in TRAIN (rounding of the customer's own total)
 TINY_SHARE = 0.10          # tiny_drop: cash below 10 % of the balance
+DISC_MULTI_GRACE = 12      # disc_multi: on multi-invoice receipts TRAIN still accepts the discount up to 12 days after the
+                           # terms (single-invoice receipts: the 3 days of POLICIES §3); later it is PARTIAL
 OVER_WHOLE_SMALL = 1.011   # odd_drop: an amount-only overpayment above 1.1 % …
 OVER_ODD_STEP = 1000       # … whose excess is not a multiple of 10 units is a wrong invoice (TRAIN 8 right / 30 wrong)
 # dispute settlement / closing payment of a partially paid invoice: words of the bank text (TRAIN: no other class uses
@@ -97,6 +102,7 @@ def _build_x(con) -> None:
     con.execute(f"""CREATE TABLE X AS
       SELECT a.bank_txn_id, a.item_id, a.amount_cents amt, coalesce(a.exception, '') exc, a.rule, coalesce(a.evidence, '') evidence,
              i.kind, i.currency icur, i.party_id, i.issue_date, i.doc_norm, i.doc_digits, i.open_at_start_cents open0,
+             i.total_cents, i.discount_pct, i.discount_days,
              l.currency lcur, l.direction, l.booking_date bd, abs(l.amount_cents) cash, coalesce(l.text_norm, '') text_norm,
              l.entity, l.bank_code, l.statement_format, fx.u,
              regexp_matches(coalesce(l.text_norm, ''), '{KW_SETTLE}') kw_settle,
@@ -206,6 +212,30 @@ def _relabel(con) -> list:
         evidence = coalesce(A.evidence, '') || '; T15 ' || f.why || ' remaining=' || f.remaining
       FROM FIX f WHERE A.bank_txn_id = f.bank_txn_id AND A.item_id = f.item_id""")
     fixes = con.sql("SELECT why, count(*) FROM FIX GROUP BY 1 ORDER BY 1").fetchall()
+
+    # multi-invoice receipt whose rows sum more than the cash by exactly the early-payment discount of one untouched
+    # invoice at full amount: that invoice took the discount (SHORT_DISCOUNT within terms + grace, PARTIAL at the net
+    # amount later). TRAIN: in terms 37 relabels / 37 right; late 178 PARTIAL vs 79 still SHORT_DISCOUNT ≤ 12 days.
+    con.execute(f"""CREATE TABLE DMC AS
+      WITH ln AS (SELECT bank_txn_id, any_value(cash) cash, sum(CASE WHEN kind = 'ARC' THEN -amt ELSE amt END) s
+                  FROM X GROUP BY 1
+                  HAVING count(*) >= 2 AND bool_and(kind IN ('ARI', 'ARC') AND icur = lcur AND direction = 'IN')),
+      c AS (SELECT x.bank_txn_id, x.item_id, x.remaining, x.exc, round(x.total_cents * x.discount_pct / 100) disc,
+                   x.bd <= x.issue_date + x.discount_days + {DISC_MULTI_GRACE} in_terms
+            FROM X x JOIN ln USING (bank_txn_id)
+            WHERE ln.s > ln.cash AND x.kind = 'ARI' AND x.discount_pct IS NOT NULL AND x.exc IN ('', 'SHORT_DISCOUNT')
+              AND abs(round(x.total_cents * x.discount_pct / 100) - (ln.s - ln.cash)) <= 1
+              AND x.amt = x.remaining AND x.remaining = x.total_cents)
+      SELECT * FROM c QUALIFY count(*) OVER (PARTITION BY bank_txn_id) = 1""")
+    con.execute("DELETE FROM DMC WHERE in_terms AND exc = 'SHORT_DISCOUNT'")
+    con.execute("""UPDATE A SET
+        exception = CASE WHEN d.in_terms THEN 'SHORT_DISCOUNT' ELSE 'PARTIAL' END,
+        amount_cents = CASE WHEN d.in_terms THEN A.amount_cents ELSE d.remaining - d.disc END,
+        rule = A.rule || '+T15.' || CASE WHEN d.in_terms THEN 'disc_multi' ELSE 'disc_multi_late' END,
+        confidence = 0.7,
+        evidence = coalesce(A.evidence, '') || '; T15 disc_multi: line excess = discount ' || d.disc
+      FROM DMC d WHERE A.bank_txn_id = d.bank_txn_id AND A.item_id = d.item_id""")
+    fixes += con.sql("SELECT CASE WHEN in_terms THEN 'disc_multi' ELSE 'disc_multi_late' END, count(*) FROM DMC GROUP BY 1 ORDER BY 1").fetchall()
 
     # remittance receipts prorated as PARTIAL on every document (T6 short of the cash everywhere)
     con.execute("""CREATE TABLE RPL AS
