@@ -23,3 +23,4 @@
 14:39 NOTE T3m re-medido sobre HEAD (fuzzref..docrules+excnorm, sin unident): ventana 89,76 -> 89,88 (recall 87,16 -> 87,64, P 98,88 -> 98,76). exact 928 pares (P 100 %), fill.big 2252 (91 %), fill.small 5471 (76 %).
 14:20 NOTE main = v85 (64a7a88) + javier/remit-fuzzy-exceptions (d3b8ab5) fusionados (a91e239); ventana completa en curso para medir confirming T2b ±CONF_DAYS. LIVE 87,71 = puesto 10; líder 95,62.
 14:37 DONE T3 comb mitm: subconjuntos 2..16 facturas abiertas del tercero = cobro (meet-in-the-middle, solución única). Ventana 87,33 → 88,01 (alloc F1 92,25 → 93,05, acc 87,65 → 88,56; ar_ref_noise R 0,618 → 0,713, P 98,91 igual). 3.760 líneas, 21.303 pares.
+14:52 NOTE revisado y fusionado main de galileo (comb mitm, T4 calibración pre-ventana, T3f top-3, FX data root, T5 precedencia): ventana 90,16 → 90,69 (alloc F1 92,87 → 93,70, recall 87,64 → 89,07).
