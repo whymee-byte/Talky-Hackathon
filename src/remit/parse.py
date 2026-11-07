@@ -193,6 +193,16 @@ def parse_txt(text: str) -> tuple[dict, list[dict]]:
         lines.append({"doc": t.group(1), "voucher": None, "po": None, "doc_date": iso_date(t.group(2)), "gross": gross,
                       "deduction": ded, "reason": (t.group(5) or None) if ded else None,
                       "paid": None if gross is None else round(gross + (ded or 0), 2)})
+    # e-mails sometimes state a total below the listed lines without saying why (withholding / discount on every
+    # line): spread the gap proportionally so the deduction rules see it per line
+    tot = sum(ln["paid"] or 0 for ln in lines)
+    adv = head.get("adv_amount")
+    if lines and adv and tot and 0.8 < adv / tot < 0.9999 and abs(adv - tot) > 0.02:
+        r = adv / tot
+        for ln in lines:
+            if ln["paid"] is not None and ln["paid"] > 0:
+                ln["paid"] = round(ln["paid"] * r, 2)
+                ln["deduction"] = round(ln["paid"] - ln["gross"], 2)
     return head, lines
 
 
