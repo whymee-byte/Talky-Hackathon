@@ -189,7 +189,7 @@ def rank(con, phase, extra=None):
     return out
 
 
-def run(phase, model, fuzzy=True):
+def run(phase, model, fuzzy=True, apply_calibration=True):
     con = connect()
     candidates(con, phase, model)
     extra = None
@@ -200,6 +200,6 @@ def run(phase, model, fuzzy=True):
     con.close()
     import os
     from . import calibrate
-    if os.path.exists(calibrate.CAL):
+    if apply_calibration and os.path.exists(calibrate.CAL):
         calibrate.apply(phase)
     return out

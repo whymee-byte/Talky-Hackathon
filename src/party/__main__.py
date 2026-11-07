@@ -42,9 +42,8 @@ def main():
         from . import calibrate
         # Calibrate only from independent, pre-window predictions and labels.
         # Never fit on the window output that is subsequently evaluated.
-        if not os.path.exists("work/train/line_party.parquet"):
-            resolve.run("train", "pre_window", fuzzy=not a.no_fuzzy)
-        calibrate.fit("work/train/line_party.parquet")
+        resolve.run("learn", "pre_window", fuzzy=not a.no_fuzzy, apply_calibration=False)
+        calibrate.fit("work/learn/line_party.parquet")
         calibrate.apply("window")
         evaluate.evaluate()
 

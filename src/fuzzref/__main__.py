@@ -33,10 +33,16 @@ def build(phase: str) -> None:
     con.execute(f"CREATE TABLE SL0 AS SELECT * FROM '{side_p}' WHERE rule NOT LIKE 'T3f.%'")
     con.execute(f"""CREATE TABLE LT AS SELECT bank_txn_id, entity, booking_date, abs(amount_cents) cash, currency, text_norm
                     FROM '{w}/lines.parquet' WHERE direction = 'IN' AND bank_txn_id NOT IN (SELECT bank_txn_id FROM SL0)""")
+    # T4 is contractually capped at three candidates.  Keep the explicit rank
+    # guard here too: low-confidence candidates beyond the top three can make a
+    # coincidental digit string look valid and silently trade precision for
+    # recall.
     con.execute(f"""CREATE TABLE P AS SELECT bank_txn_id, party_id, confidence FROM '{w}/line_party.parquet'
-                    WHERE confidence >= {PARTY_MIN} AND bank_txn_id IN (SELECT bank_txn_id FROM LT)""")
+                    WHERE confidence >= {PARTY_MIN} AND rank <= 3
+                      AND bank_txn_id IN (SELECT bank_txn_id FROM LT)""")
     con.execute(f"""CREATE TABLE IO AS SELECT item_id, kind, party_id, entity, currency, issue_date, total_cents,
                            open_at_start_cents open_c, doc_digits dig, discount_pct, discount_days,
+                           ltrim(regexp_replace(doc_digits, '[^0-9]', '', 'g'), '0') dig_norm,
                            ltrim(regexp_replace(coalesce(po_norm, ''), '[^0-9]', '', 'g'), '0') po_dig
                     FROM '{w}/items.parquet'
                     WHERE side = 'AR' AND kind IN ('ARI', 'ARC') AND open_at_start_cents > 0
@@ -54,12 +60,12 @@ def build(phase: str) -> None:
                   JOIN LT l USING (bank_txn_id) WHERE i.currency = l.currency AND i.issue_date <= l.booking_date),
       m AS (
         SELECT pi.*, 'typo' how FROM pi JOIN TK t USING (bank_txn_id)
-        WHERE length(t.d) = length(pi.dig) AND t.d <> pi.dig AND damerau_levenshtein(t.d, pi.dig) <= 1
+        WHERE length(t.d) = length(pi.dig_norm) AND t.d <> pi.dig_norm AND damerau_levenshtein(t.d, pi.dig_norm) <= 1
         UNION ALL SELECT pi.*, 'trunc' FROM pi JOIN TK t USING (bank_txn_id)
-        WHERE (length(t.d) < length(pi.dig) AND starts_with(pi.dig, t.d))
-           OR (length(t.d) > length(pi.dig) AND ends_with(t.d, pi.dig))
-           OR (length(t.d) >= 6 AND length(t.d) < length(pi.dig) AND ends_with(pi.dig, t.d))
-        UNION ALL SELECT pi.*, 'exact' FROM pi JOIN TK t USING (bank_txn_id) WHERE t.d = pi.dig
+        WHERE (length(t.d) < length(pi.dig_norm) AND starts_with(pi.dig_norm, t.d))
+           OR (length(t.d) > length(pi.dig_norm) AND ends_with(t.d, pi.dig_norm))
+           OR (length(t.d) >= 6 AND length(t.d) < length(pi.dig_norm) AND ends_with(pi.dig_norm, t.d))
+        UNION ALL SELECT pi.*, 'exact' FROM pi JOIN TK t USING (bank_txn_id) WHERE t.d = pi.dig_norm
         UNION ALL SELECT pi.*, 'po' FROM pi JOIN TK t USING (bank_txn_id) WHERE length(pi.po_dig) >= 6 AND t.d = pi.po_dig)
       SELECT bank_txn_id, item_id, any_value(kind) kind, any_value(open_c) open_c, any_value(total_cents) total_cents,
              any_value(issue_date) issue_date, any_value(discount_pct) discount_pct, any_value(discount_days) discount_days,
@@ -90,7 +96,7 @@ def build(phase: str) -> None:
     # stage B: one open item of the entity whose amount = the cash and whose number is close to a text token
     # (no party needed; beats an exact hit on a different item, i.e. a typo that lands on another number)
     con.execute(f"""CREATE TABLE B AS
-      WITH c AS (SELECT l.bank_txn_id, i.item_id, i.dig, i.po_dig, i.party_id FROM LT l
+      WITH c AS (SELECT l.bank_txn_id, i.item_id, i.dig_norm dig, i.po_dig, i.party_id FROM LT l
                  JOIN IO i ON i.entity = l.entity AND i.currency = l.currency AND i.open_c = l.cash AND i.kind = 'ARI'
                       AND i.issue_date <= l.booking_date
                  WHERE l.bank_txn_id NOT IN (SELECT bank_txn_id FROM OUTR)),
