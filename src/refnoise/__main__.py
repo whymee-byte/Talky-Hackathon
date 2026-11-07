@@ -13,6 +13,9 @@ already allocated to another line (an item whose payment was RETURNED counts as 
 line amount (exact cents). Accepted only if the candidate is unique for the line AND the line is the only one proposing
 that item. Amount = the open balance, no exception.
 Window (TRAIN 2024-07 → 2025-06; designed on Q1, Q2–Q4 untouched): Q1 644 lines, P 99,5 %; Q2–Q4 2.250 lines, P 97,7 %.
+
+Rule T14.unique_combo.k<k>.r<rank> (see combos): lines still without item → the only combination of 2–3 open unused
+items of one candidate party adding up to the cash.
 """
 from __future__ import annotations
 
@@ -26,6 +29,8 @@ from src.common import REPO
 
 RANK_MAX = 3
 CONF = {1: 0.9, 2: 0.85, 3: 0.85}
+COMBO_KMAX = 40                    # most recent open items per candidate party in the combination search
+COMBO_CONF = {2: 0.85, 3: 0.6}
 
 
 def build(phase: str, alloc: str | None = None) -> None:
@@ -58,9 +63,54 @@ def build(phase: str, alloc: str | None = None) -> None:
       FROM PICK""")
     con.execute("DELETE FROM A WHERE item_id IS NULL AND bank_txn_id IN (SELECT bank_txn_id FROM NEW)")
     con.execute("INSERT INTO A BY NAME SELECT * FROM NEW")
+    n_amount = con.sql("SELECT count(*) FROM NEW").fetchall()[0][0]
+    combos(con, w)
     con.execute(f"COPY A TO '{p}' (FORMAT parquet)")
     print(f"[{phase}] refnoise: {con.sql('SELECT count(*) FROM E').fetchall()[0][0]} receipts without item -> "
-          f"{con.sql('SELECT rule, count(*) FROM NEW GROUP BY 1 ORDER BY 1').fetchall()} -> {p} ({time.time() - t0:.0f}s)")
+          f"unique_amount {n_amount} lines; "
+          f"{con.sql('SELECT rule, count(DISTINCT bank_txn_id) FROM COMBO GROUP BY 1 ORDER BY 1').fetchall()} -> {p} "
+          f"({time.time() - t0:.0f}s)")
+
+
+def combos(con, w: str) -> None:
+    """T14.unique_combo.k<k>.r<rank>: still no item → the only combination of 2..COMBO_MAX open unused items of ONE of
+    T4's top-3 parties (its COMBO_KMAX most recent open items) whose balances add up to the cash exactly; dropped when
+    another line proposes one of its items. Window: designed on Q1 (k=2 P 100 %, k=3 P 87 %); Q2–Q4 untouched: k=2
+    P 97–98 %, k=3 P 79–87 % (all above F1/2; these lines had no item, so line accuracy can only go up)."""
+    con.execute("""CREATE OR REPLACE TABLE E2 AS SELECT * FROM E
+                   WHERE bank_txn_id IN (SELECT bank_txn_id FROM A GROUP BY 1 HAVING count(item_id) = 0)""")
+    con.execute("""CREATE OR REPLACE TABLE USED AS SELECT item_id FROM A WHERE item_id IS NOT NULL GROUP BY 1
+                   HAVING sum(CASE WHEN coalesce(exception, '') = 'RETURNED' THEN -1 ELSE 1 END) > 0""")
+    con.execute(f"""CREATE OR REPLACE TABLE CI AS SELECT * FROM (
+      SELECT e.bank_txn_id, e.amount_cents cash, p.party_id, p.rank, i.item_id, i.open_at_start_cents v, i.issue_date
+      FROM E2 e JOIN '{w}/line_party.parquet' p ON p.bank_txn_id = e.bank_txn_id AND p.rank <= {RANK_MAX}
+      JOIN '{w}/items.parquet' i ON i.party_id = p.party_id AND i.side = 'AR' AND i.kind = 'ARI' AND i.entity = e.entity
+           AND i.currency = e.currency AND i.open_at_start_cents > 0 AND i.open_at_start_cents < e.amount_cents
+           AND i.issue_date <= e.booking_date
+      WHERE i.item_id NOT IN (SELECT item_id FROM USED))
+      QUALIFY row_number() OVER (PARTITION BY bank_txn_id, party_id ORDER BY issue_date DESC, item_id) <= {COMBO_KMAX}""")
+    con.execute("""CREATE OR REPLACE TABLE CS AS
+      SELECT a.bank_txn_id, a.party_id, a.rank, [a.item_id, b.item_id] items, [a.v, b.v] vals FROM CI a JOIN CI b
+        ON a.bank_txn_id = b.bank_txn_id AND a.party_id = b.party_id AND a.item_id < b.item_id AND a.v + b.v = a.cash
+      UNION ALL
+      SELECT a.bank_txn_id, a.party_id, a.rank, [a.item_id, b.item_id, c.item_id], [a.v, b.v, c.v] FROM CI a JOIN CI b
+        ON a.bank_txn_id = b.bank_txn_id AND a.party_id = b.party_id AND a.item_id < b.item_id AND a.v + b.v < a.cash
+      JOIN CI c ON c.bank_txn_id = a.bank_txn_id AND c.party_id = a.party_id AND b.item_id < c.item_id
+        AND a.v + b.v + c.v = a.cash""")
+    con.execute("CREATE OR REPLACE TABLE CU AS SELECT * FROM CS QUALIFY count(*) OVER (PARTITION BY bank_txn_id) = 1")
+    con.execute("""CREATE OR REPLACE TABLE CX AS SELECT bank_txn_id, party_id, rank, len(items) k,
+                     unnest(items) item_id, unnest(vals) amount_cents FROM CU""")
+    con.execute("""DELETE FROM CX WHERE bank_txn_id IN (SELECT bank_txn_id FROM CX WHERE item_id IN
+                     (SELECT item_id FROM CX GROUP BY 1 HAVING count(DISTINCT bank_txn_id) > 1))""")
+    case = " ".join(f"WHEN {k} THEN {c}" for k, c in COMBO_CONF.items())
+    con.execute(f"""CREATE OR REPLACE TABLE COMBO AS
+      SELECT bank_txn_id, item_id, amount_cents, NULL::VARCHAR category, '' exception,
+             'T14.unique_combo.k' || k || '.r' || rank rule, CASE k {case} END confidence,
+             'no item after matching; only combination of ' || k || ' open unused items of T4 candidate ' || party_id
+               || ' (rank ' || rank || ') adding up to the cash' evidence
+      FROM CX""")
+    con.execute("DELETE FROM A WHERE item_id IS NULL AND bank_txn_id IN (SELECT bank_txn_id FROM COMBO)")
+    con.execute("INSERT INTO A BY NAME SELECT * FROM COMBO")
 
 
 def main() -> None:
