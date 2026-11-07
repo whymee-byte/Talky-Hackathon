@@ -9,6 +9,8 @@ import sys
 
 import duckdb
 
+from src.common import data_root
+
 sys.path.insert(0, "data/starter")
 import bankrec_score as bs  # noqa: E402
 
@@ -31,7 +33,8 @@ def ensure():
 
 def score(alloc, show=True):
     ensure()
-    cats = [r["category"] for r in csv.DictReader(open("data/bankrec-docs-and-masters/masters/categories.csv"))]
+    cats_path = os.path.join(data_root(), "masters", "categories.csv")
+    cats = [r["category"] for r in csv.DictReader(open(cats_path, encoding="utf-8-sig", newline=""))]
     g = bs.load_golden(f"{D}/golden.csv.gz", f"{D}/bank_transactions.csv.gz", EXC, cats)
     rows = duckdb.sql(f"""SELECT a.bank_txn_id, coalesce(a.item_id, ''),
             CASE WHEN a.item_id IS NULL THEN '' ELSE printf('%.2f', a.amount_cents / 100.0) END,
