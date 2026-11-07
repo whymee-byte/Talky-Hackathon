@@ -6,6 +6,7 @@
 Rules (rule ids are stable, used in the audit trail):
 - T2.dd_batch      batch credit (IN, same account, batch_id in the bank text) → every receipt of the batch;
                    re-presented receipts (re_presentation=Y) carry no exception.
+- T2.dd_return     R-transaction (OUT, mandate in the text, batch when quoted) → item of the reversed receipt, RETURNED.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ import duckdb
 
 from src.common import REPO, data_root, phase_dir, safe_stdout
 
-STEPS = ["dd"]
+STEPS = ["dd", "ret"]
 COLUMNS = "bank_txn_id, item_id, amount_cents, exception, rule, link_key, confidence, evidence"
 
 
@@ -120,16 +121,24 @@ def resolve_receipts(con, src_table: str, out_table: str):
     """)
 
 
-def step_dd(con, dirs) -> str | None:
+def load_dd(con, dirs) -> bool:
+    if con.sql("select count(*) from information_schema.tables where table_name = 'dd'").fetchall()[0][0]:
+        return True
     src = glob_csv(dirs, "direct_debit_batches")
     if not src:
-        return None
+        return False
     con.sql(f"""create or replace table dd as
       select row_number() over () rid, batch_id, scheme, collection_date::date collection_date, account_id, currency,
              round(batch_total::double * 100)::bigint batch_total_cents, end_to_end_id, mandate_id, debtor_name,
              upper(replace(debtor_iban, ' ', '')) debtor_iban, round(amount::double * 100)::bigint amount_cents,
              remittance_info ref, re_presentation
       from (select distinct * from {src})""")
+    return True
+
+
+def step_dd(con, dirs) -> str | None:
+    if not load_dd(con, dirs):
+        return None
     # batch credit line: IN on the batch account, batch_id among the references of the text
     con.sql("""create or replace table dd_line as
       with b as (select batch_id, any_value(account_id) account_id, any_value(batch_total_cents) total, count(*) n,
@@ -151,13 +160,55 @@ def step_dd(con, dirs) -> str | None:
     return "links_dd"
 
 
+def step_ret(con, dirs) -> str | None:
+    """Direct-debit return (R-transaction): OUT line quoting the mandate (and in ES/PT the batch) → the receipt it
+    reverses (same mandate, same amount, latest collection on or before the booking date) → that receipt's item,
+    RETURNED, amount = the receipt (the original allocation)."""
+    if not load_dd(con, dirs):
+        return None
+    con.sql("""create or replace table ret_pick as
+      with rl0 as (
+        select l.bank_txn_id, l.booking_date, -l.amount_cents amt,
+               list_concat(l.batch_refs, regexp_extract_all(l.text_norm, '(?:DEV|REM) ?([0-9]{11})', 1)) batch_refs,
+               unnest(l.mandate_ids) mandate_id,
+               nullif(regexp_extract(' ' || l.text_norm || ' ', ' ((?:AC|AM|MD|MS|SL|BE|AG|RR|RC|FF|DT|CN|ED|FO|MI|NO|PY|RF|TM)[0-9]{2}) ', 1), '') code
+        from lines l where l.direction = 'OUT' and len(l.mandate_ids) > 0),
+      rl as (
+        -- SEPA R-transaction timing: MD06 (refund requested by the debtor) comes weeks later; other codes within ~2 weeks
+        select *, case when code = 'MD06' then 14 when code is not null then 2 else 2 end lag_min,
+                  case when code = 'MD06' then 80 when code is not null then 16 else 80 end lag_max
+        from rl0)
+      select rl.bank_txn_id, d.rid, d.batch_id, d.mandate_id, d.amount_cents, d.collection_date, rl.code,
+             list_contains(rl.batch_refs, d.batch_id) batch_in_text
+      from rl join dd d on d.mandate_id = rl.mandate_id and d.amount_cents = rl.amt
+                       and d.collection_date <= rl.booking_date - to_days(rl.lag_min)
+                       and d.collection_date >= rl.booking_date - to_days(rl.lag_max)
+      qualify row_number() over (partition by rl.bank_txn_id order by list_contains(rl.batch_refs, d.batch_id) desc,
+                                 -- MD06 refunds: closest to the typical delay learned on TRAIN (~7 weeks); others: latest
+                                 case when rl.code = 'MD06' then abs((rl.booking_date - d.collection_date) - 49) else 0 end,
+                                 d.collection_date desc, d.rid) = 1""")
+    con.sql("""create or replace table ret_src as
+      select d.rid, a.entity, d.mandate_id, d.debtor_iban, d.ref, d.amount_cents
+      from dd d join (select distinct rid from ret_pick) p using (rid)
+      join (select account_id, any_value(entity) entity from lines group by 1) a using (account_id)""")
+    resolve_receipts(con, "ret_src", "ret_item")
+    con.sql("""create or replace table links_ret as
+      select p.bank_txn_id, r.item_id, p.amount_cents, 'RETURNED' exception, 'T2.dd_return' rule, p.batch_id link_key,
+             round(case when p.batch_in_text then 1.0 else 0.9 end
+                   * case when r.doc_exact or r.doc_digits then 1.0 when r.n_tied = 1 then 0.85 else 0.6 end, 3) confidence,
+             concat('mandate=', p.mandate_id, '; code=', coalesce(p.code, '?'), '; batch_id=', p.batch_id, '; batch_in_text=', p.batch_in_text,
+                    '; collected=', p.collection_date, '; amount=receipt') evidence
+      from ret_pick p join ret_item r using (rid)""")
+    return "links_ret"
+
+
 def build(phase: str, data: str | None, steps: list[str]) -> dict:
     con = duckdb.connect()
     setup(con, phase, data)
     dirs = detail_dirs(phase, data)
     tables = []
     for s in steps:
-        t = {"dd": step_dd}[s](con, dirs)
+        t = {"dd": step_dd, "ret": step_ret}[s](con, dirs)
         if t:
             tables.append(t)
     union = " union all ".join(f"select {COLUMNS} from {t}" for t in tables) or \
