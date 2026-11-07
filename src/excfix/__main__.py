@@ -30,7 +30,8 @@ import time
 
 import duckdb
 
-from src.common import REPO
+from src.common import REPO, data_root
+from src.common.profile import sql_wht_parties, withholding
 
 TOL = "greatest(1, 0.005 * abs(remaining))"
 NONSEPA = ("({t}bank_code LIKE '%XBCT' OR ({t}statement_format = 'n43' AND {t}bank_code = '13') OR {t}bank_code = 'NTRF'"
@@ -41,7 +42,7 @@ OVER_ADD_PCT = 0.01        # over_add: excess = exactly 1 % of the open amount (
 BC_EUR_STEP = 500          # bc_add on EUR lines: the fee is a whole multiple of 5 EUR (TRAIN shortfall distribution)
 OVER_SINGLE_MAX = 1.5      # over_single: whole-unit excess up to 50 %
 OVER_SMALL = 1.02          # over_single: any excess up to 2 %
-WHT_ENTITIES = ('MX01', 'BR01', 'MA01')   # POLICIES §3 SHORT_WITHHOLDING countries
+# SHORT_WITHHOLDING customers: learned from TRAIN + POLICIES §3 by customer country (src.common.profile), not entity ids
 
 
 def build(phase: str, alloc: str | None = None, dst: str | None = None) -> None:
@@ -49,7 +50,7 @@ def build(phase: str, alloc: str | None = None, dst: str | None = None) -> None:
     w = os.path.join(REPO, "work", phase).replace(os.sep, "/")
     p = (alloc or f"{w}/allocations.parquet").replace(os.sep, "/")
     out = (dst or p).replace(os.sep, "/")
-    fx = os.path.join(REPO, "data", "masters", "fx_rates.csv").replace(os.sep, "/")
+    fx = os.path.join(data_root(), "masters", "fx_rates.csv").replace(os.sep, "/")   # same masters as the rest (HK_DATA root)
     con = duckdb.connect()
     con.execute(f"CREATE TABLE A AS SELECT * FROM '{p}'")
     con.execute(f"CREATE VIEW L AS SELECT * FROM '{w}/lines.parquet'")
@@ -114,6 +115,7 @@ def build(phase: str, alloc: str | None = None, dst: str | None = None) -> None:
                        FROM A a JOIN L l USING (bank_txn_id)
                        WHERE a.item_id IS NOT NULL AND coalesce(a.exception, '') <> 'DUPLICATE_PAYMENT' GROUP BY 1""")
         nonsepa = NONSEPA.format(t="n.")
+        whtp = sql_wht_parties(con, withholding(phase))
         con.execute(f"""CREATE TABLE C AS
           SELECT n.bank_txn_id, n.direction, i.item_id, i.kind, i.total_cents, i.open_at_start_cents open_c, n.cash,
             CASE WHEN n.direction = 'IN' AND i.kind = 'ARI' AND u.item_id IS NULL AND i.open_at_start_cents > 0
@@ -121,7 +123,7 @@ def build(phase: str, alloc: str | None = None, dst: str | None = None) -> None:
                       AND abs(n.cash - round(i.total_cents * (1 - i.discount_pct / 100))) <= 1
                       AND i.open_at_start_cents = i.total_cents THEN 'disc_add'
                  WHEN n.direction = 'IN' AND i.kind = 'ARI' AND u.item_id IS NULL AND i.open_at_start_cents > 0
-                      AND {nonsepa} AND n.entity NOT IN {WHT_ENTITIES}
+                      AND {nonsepa} AND n.party_id NOT IN {whtp}
                       AND i.open_at_start_cents - n.cash > 0 AND i.open_at_start_cents - n.cash <= {BC_PCT} * i.open_at_start_cents
                       AND (i.open_at_start_cents - n.cash) / coalesce(n.u, 1.0) <= {BC_EUR_MAX}
                       AND (n.currency <> 'EUR' OR (i.open_at_start_cents - n.cash) % {BC_EUR_STEP} = 0) THEN 'bc_add'
