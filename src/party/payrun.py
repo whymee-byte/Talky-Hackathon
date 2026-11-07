@@ -12,7 +12,7 @@ whole-run parties when the amount singles out one row.
 import glob
 import os
 
-from .common import RAW, src
+from .common import CACHE, RAW, src
 
 RUN_RE = r"\b((?:PR|CF)[0-9]{12})\b"
 CONF_DOC, CONF_IBAN, CONF_NAME = 0.96, 0.95, 0.90
@@ -25,6 +25,18 @@ def run_files(phase):
     for p in phases:
         files += glob.glob(f"{RAW}/{p}/payment_runs/*.csv")
     return [f for f in files if not os.path.basename(f).startswith("._")]
+
+
+def runs_source(con, phase, files):
+    """read_parquet(...) over all payment-run CSVs of the phase, cached in data_cache/party/ by count + total size
+    (reading ~1,000 small CSVs with union_by_name takes ~80 s; the Parquet takes under a second)."""
+    sig = f"{len(files)}_{sum(os.path.getsize(f) for f in files)}"
+    pq = f"{CACHE}/party/payment_runs_{phase}_{sig}.parquet"
+    if not os.path.isfile(pq):
+        os.makedirs(os.path.dirname(pq), exist_ok=True)
+        con.execute(f"""COPY (SELECT * FROM read_csv({files!r}, union_by_name=true, filename=true, all_varchar=true))
+                        TO '{pq}' (FORMAT parquet)""")
+    return f"read_parquet('{pq}')"
 
 
 def add(con, phase, model):
@@ -41,7 +53,7 @@ def add(con, phase, model):
                CAST(round(CAST(transfer_amount AS DOUBLE) * 100) AS BIGINT) AS amt,
                regexp_replace(upper(document_number), '[^A-Z0-9]', '', 'g') AS doc_key,
                abs(CAST(round(CAST(document_amount AS DOUBLE) * 100) AS BIGINT)) AS doc_amt
-        FROM read_csv({files!r}, union_by_name=true, filename=true, all_varchar=true)""")
+        FROM {runs_source(con, phase, files)}""")
     # line -> run (same debtor account) -> beneficiary row singled out by amount or by sequence
     con.execute(f"""CREATE OR REPLACE TEMP TABLE prow AS
         WITH l AS (SELECT bank_txn_id, account_id, text_norm, abs(amount_cents) AS cash,
