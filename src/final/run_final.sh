@@ -171,6 +171,7 @@ run_stage unident T7b_unidentified
 run_stage cnfx T13b_cnfx
 run_stage duefill T20_duefill
 run_stage tolmatch T3g_tolmatch
+run_stage pocomb T22_pocomb
 run_stage delaycomb T21b_delaycomb
 run_stage cnmore T19_cnmore
 opt_stage() { local module=$1 name=$2; shift 2; have "$module" && step "$name" opt "$PY" -u -m "src.$module" --phase "$PHASE" "$@"; true; }

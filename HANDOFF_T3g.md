@@ -87,3 +87,15 @@ P 0,88). Recomendación: integrar los tres (sin riesgo medido; NO_T3G=1 los apag
 Ese main ya lleva mi --overfix en run_phase.sh **pero no en run_final.sh** (termina en excfix): avisado. Esta rama:
 `src.tolpost` (overfix + T3u) tras excfix en run_phase.sh y run_final.sh; `src.delaycomb` antes de cnmore en ambos.
 Lo nuevo frente a 94,03 es T3u (+delaycomb). Ventana en curso.
+
+## 9. T22 · `src/pocomb` (paga pedidos completos) y por qué el bloque de +2 no cae
+Patrón medido en el golden: un cliente nunca parte un pedido (`customer_po`) en el 95-96 % de los cobros
+multi-factura, **estable en cada semestre 2021H2..2025H1** (patrón compartido, sin deriva → seguro en FINAL).
+Subconjunto único de unidades-pedido = cobro: sondeo 211 ok / 25 mal (89 %); en pipeline 293 líneas, P 0,76,
+ventana +0,03, Q2-Q4 +0,03. Complementario a delaycomb (juntos 93,54 en la ventana sobre 93,50).
+Descartado con datos: bloque por emisión/vencimiento (1,8 %), quincena (12 %), consecutivos (16 %), más grandes
+primero (no), referencias parciales en el texto (no hay).
+Cuello real: de ~5.000 cobros multi-factura sin casar, 1.156 tienen facturas del golden "robadas" por otra línea
+(2.311 facturas), 959 de ellas por T5.full_clear (P global 0,97, no se puede contestar a ciegas). Reasignación
+arbitrada contra reglas débiles (T3x.win, T3m.fill, fill_weak, overpayment): 76 ok / 10 mal, sólo 76 líneas → no
+compensa como etapa. El resto no tiene solución única por importe: hace falta el aviso de pago, que no existe.
