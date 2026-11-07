@@ -40,7 +40,7 @@ def build(phase: str) -> None:
                            ltrim(regexp_replace(coalesce(po_norm, ''), '[^0-9]', '', 'g'), '0') po_dig
                     FROM '{w}/items.parquet'
                     WHERE side = 'AR' AND kind IN ('ARI', 'ARC') AND open_at_start_cents > 0
-                      AND item_id NOT IN (SELECT item_id FROM SL0) AND length(doc_digits) >= 6""")
+                      AND item_id NOT IN (SELECT item_id FROM SL0 WHERE item_id NOT IN (SELECT item_id FROM SL0 WHERE exception = 'RETURNED')) AND length(doc_digits) >= 6""")
     con.execute("""CREATE TABLE TK AS   -- digits of 1-3 adjacent tokens ("INV23 0211203" -> 230211203)
       WITH t AS (SELECT bank_txn_id, string_split(text_norm, ' ') tok FROM LT),
            g AS (SELECT bank_txn_id, array_to_string(tok[i:i + k - 1], '') x
