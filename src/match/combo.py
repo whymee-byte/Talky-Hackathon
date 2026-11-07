@@ -12,7 +12,8 @@ of the unexplained multi-invoice lines; 0 spurious solutions on 190 lines whose 
 """
 import numpy as np
 
-CAP = 16          # most recent candidates per line
+CAP = 16          # most recent invoices per line
+CAP_ARC = 4       # most recent credit notes per line (negative), on top of CAP
 DUE_LO, DUE_HI = -120, 14
 AGE_MAX = 200
 K_MIN = 2
@@ -45,22 +46,35 @@ def solve(vals, target):
     return 1, [idx for idx in range(h) if i >> idx & 1] + [h + idx for idx in range(n - h) if j >> idx & 1]
 
 
-def add_solutions(con):
-    """Append unique mitm solutions to CS (bank_txn_id, items, k, mitm) for CB lines the SQL stage did not solve."""
+def add_solutions(con, passes=3):
+    """Append unique mitm solutions to CS (bank_txn_id, items, k, mitm) for CB lines the SQL stage did not solve.
+    Repeated: items taken by a pass leave the candidate sets, which makes other lines' solutions unique."""
+    for p in range(passes):
+        if _pass(con, False) == 0:
+            break
+    for p in range(2):        # credit notes (negative) only for what is left: they add spurious sums elsewhere
+        if _pass(con, True) == 0:
+            break
+
+
+def _pass(con, with_arc):
+    kinds = "('ARI', 'ARC')" if with_arc else "('ARI')"
     rows = con.sql(f"""
         WITH taken AS (SELECT item_id FROM SL UNION SELECT item_id FROM REFP UNION SELECT item_id FROM AMTP
                        UNION SELECT unnest(items) FROM CS),
              cand AS (
-               SELECT cb.bank_txn_id, cb.rem, i.item_id, i.open_at_start_cents AS v
+               SELECT cb.bank_txn_id, cb.rem, i.item_id,
+                      CASE WHEN i.kind = 'ARC' THEN -i.open_at_start_cents ELSE i.open_at_start_cents END AS v
                FROM CB cb JOIN LT lt USING (bank_txn_id)
                JOIN IO i ON i.party_id = cb.party_id AND i.currency = lt.currency AND i.entity = lt.entity
-                    AND i.kind = 'ARI' AND i.issue_date <= lt.booking_date
+                    AND i.kind IN {kinds} AND i.issue_date <= lt.booking_date
                     AND lt.booking_date - i.issue_date <= {AGE_MAX}
-                    AND i.due_date BETWEEN lt.booking_date + ({DUE_LO}) AND lt.booking_date + {DUE_HI}
+                    AND (i.kind = 'ARC' OR i.due_date BETWEEN lt.booking_date + ({DUE_LO}) AND lt.booking_date + {DUE_HI})
                WHERE lt.direction = 'IN' AND cb.rem > 0
                  AND cb.bank_txn_id NOT IN (SELECT bank_txn_id FROM CS)
                  AND i.item_id NOT IN (SELECT item_id FROM taken)
-               QUALIFY row_number() OVER (PARTITION BY cb.bank_txn_id ORDER BY i.issue_date DESC, i.item_id) <= {CAP})
+               QUALIFY row_number() OVER (PARTITION BY cb.bank_txn_id, i.kind ORDER BY i.issue_date DESC, i.item_id)
+                       <= CASE WHEN i.kind = 'ARC' THEN {CAP_ARC} ELSE {CAP} END)
         SELECT bank_txn_id, any_value(rem), list(item_id ORDER BY item_id), list(v ORDER BY item_id)
         FROM cand GROUP BY 1 HAVING count(*) >= {K_MIN}""").fetchall()
     out = []
@@ -68,5 +82,7 @@ def add_solutions(con):
         k, sol = solve(np.array(vals, dtype=np.int64), int(rem))
         if k == 1 and len(sol) >= K_MIN:
             out.append((bt, [ids[i] for i in sol], len(sol)))
-    con.executemany("INSERT INTO CS VALUES (?, ?, ?, true)", out)
-    print(f"  comb mitm: {len(rows)} lines tried, {len(out)} unique solutions, {sum(k for _, _, k in out)} pairs")
+    if out:
+        con.executemany("INSERT INTO CS VALUES (?, ?, ?, true)", out)
+    print(f"  comb mitm{' +ARC' if with_arc else ''}: {len(rows)} lines tried, {len(out)} unique solutions, {sum(k for _, _, k in out)} pairs")
+    return len(out)

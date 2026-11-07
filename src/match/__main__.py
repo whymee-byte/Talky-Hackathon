@@ -272,7 +272,7 @@ def build(phase):
                  UNION ALL BY NAME SELECT *, 1 AS stage FROM COMBP
                  UNION ALL BY NAME SELECT *, 2 AS stage FROM AMTP),
            -- an item fully cleared by a side link or by a stronger line is not available any more
-           blocked AS (SELECT DISTINCT item_id FROM SL WHERE rule NOT LIKE 'T3f.%'),
+           blocked AS (SELECT DISTINCT item_id FROM SL WHERE rule NOT LIKE 'T3f.%' AND item_id NOT IN (SELECT item_id FROM SL WHERE exception = 'RETURNED')),
            r AS (SELECT u.*, row_number() OVER (PARTITION BY item_id ORDER BY stage, confidence DESC, bank_txn_id) AS rk
                  FROM u WHERE item_id NOT IN (SELECT item_id FROM blocked))
       SELECT * EXCLUDE (rk) FROM r
