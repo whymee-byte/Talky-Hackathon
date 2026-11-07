@@ -116,3 +116,8 @@ todo validado fuera de muestra (Q1 → Q2-Q4) y sin red. Medida de la ventana co
 Para FINAL habría sido lo mismo que LIVE: pasos deterministas al final del pipeline, reglas generales aprendidas de
 TRAIN (retraso por cliente, pedidos completos, forma del sobrepago, tabla de no identificados), sin ids ni importes
 a fuego.
+
+## 12. Cierre
+No fusionada (main avanzó a 226c0a2 con duecomb y maestros FINAL; chocaba con los runners y no daba tiempo a remedir).
+Queda rebasada sobre ef14c90 con ventana 94,24 (main 94,14) y Q2-Q4 94,13. Nota: `tools/variant_b.py` en main apunta a
+un "2.º envío FINAL"; según /reglas FINAL puntúa sólo el primer fichero válido y no se puede repetir.
