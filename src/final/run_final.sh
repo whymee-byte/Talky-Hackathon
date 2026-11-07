@@ -178,6 +178,7 @@ opt_stage cnrest T16_cnrest
 opt_stage cnfill T21_cnfill
 opt_stage fxlate T21_fxlate
 run_stage excfix T15_excfix
+[[ -n "${NO_T3G:-}${NO_OVERFIX:-}" ]] || run_stage tolmatch T3g_overfix --overfix
 
 SHA=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo nogit)
 OUT="out/${PHASE}_$(date +%Y%m%d-%H%M)_${SHA}.csv.gz"
