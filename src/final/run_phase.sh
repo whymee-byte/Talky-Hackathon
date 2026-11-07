@@ -7,7 +7,15 @@
 set -euo pipefail
 PHASE=${1:?phase: sample|window|live|final}
 cd "$(dirname "$0")/../.."
-PY=${PY:-.venv/bin/python}
+# Python: $PY if it really runs, else the first candidate that does (on Windows `python3` can be the Store alias).
+py_ok() { "$1" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; }
+PY_FOUND=""
+for c in "${PY:-}" .venv/bin/python .venv/Scripts/python.exe python3 python py; do
+  [[ -n "$c" ]] && py_ok "$c" && { PY_FOUND=$c; break; }
+done
+[[ -n "$PY_FOUND" ]] || { echo "ERROR: no Python >= 3.10 found (set PY=/path/to/python)"; exit 2; }
+PY=$PY_FOUND
+echo "== python: $PY ($($PY -c 'import sys; print(sys.version.split()[0])'))"
 export PYTHONDONTWRITEBYTECODE=1
 step() { local t=$SECONDS; echo "== $PHASE: $1"; shift; "$@"; echo "   ($((SECONDS - t)) s)"; }
 if [[ "$PHASE" == "final" ]]; then

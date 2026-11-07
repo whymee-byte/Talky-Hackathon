@@ -25,12 +25,15 @@ set -uo pipefail
 PHASE=${1:?uso: src/final/run_final.sh <sample|window|live|final>}
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$REPO"
-PY=${PY:-"$REPO/.venv/bin/python"}
-if [[ "$PY" == */* || "$PY" == *\\* ]]; then
-  [[ -x "$PY" ]] || PY=python3
-else
-  command -v "$PY" >/dev/null 2>&1 || PY=python3
-fi
+# Python: $PY if it really runs, else the first candidate that does. "Runs" is tested by executing it: on Windows
+# `python3` on PATH can be the Microsoft Store alias, which exists but is not Python.
+py_ok() { "$1" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; }
+PY_FOUND=""
+for c in "${PY:-}" "$REPO/.venv/bin/python" "$REPO/.venv/Scripts/python.exe" python3 python py; do
+  [[ -n "$c" ]] && py_ok "$c" && { PY_FOUND=$c; break; }
+done
+[[ -n "$PY_FOUND" ]] || { echo "ERROR: no Python >= 3.10 found (set PY=/path/to/python)"; exit 2; }
+PY=$PY_FOUND
 W="work/$PHASE"
 mkdir -p "$W" out
 LOG="$W/final_run.log"
@@ -101,7 +104,8 @@ step() {
   fi
 }
 have() {
-  local module=$1 path="src/${module//.//}"
+  local module=$1      # separate statement: with `set -u` bash may expand $module before assigning it
+  local path="src/${module//.//}"
   [[ -f "$path/__main__.py" || -f "$path.py" ]]
 }
 
