@@ -20,6 +20,15 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
 > `src/recon.py` es un prototipo monolítico anterior (≈ 51,6 en `sample`, no comparable con la ventana): úsalo como
 > referencia de reglas, no como base de código.
 
+> **Actualización 13:58:** javier lleva la ventana a **82,18** y LIVE a **71,55** con `side_links_ap` + T3 v3 + T2 1-2 + T6 + T7
+> (`aff5707`, en su máquina). Pero **en `main` no es reproducible**: `src/match` no lee `side_links_ap.parquet` y
+> `src/remit/` no está en git. T10 sigue siendo urgente, ahora para *subir a `main`* lo que ya funciona. Además:
+> **ventana 82,18 frente a LIVE 71,55 = 10,6 puntos de brecha**. Hay que explicarlo antes de ajustar nada más (ver
+> T16): posible fuga en la ventana, saldos iniciales distintos (`open_items_at_start`) o drift de LIVE.
+> Las cifras de recall de la revisión de abajo son las del 52,62. Según javier, `side_links_ap` ya cubre `ap_fx` (R 99,9),
+> `ap_partial`, `ap_paid_by_holding` y `ap_credit_note_netted` (R 100), tarjetas y cheques. **Cada dueño vuelve a medir su
+> segmento sobre el pipeline de T10 antes de empezar** y cierra la tarea si ya cumple el *Verificar*.
+>
 > **Revisión 13:55 (diagnóstico de la ventana 52,62, `out/window_20261107-1328_c5a5ffe.score.json`):** la precisión ya
 > está bien (P 92 %). Lo que falta es el **recall** (R 38,7 %: no aparece el 61 % de los pares). Fallos encontrados, de más
 > a menos puntos (en % de pares golden de la ventana):
@@ -61,6 +70,7 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
 | T13 | Abonos neteados y N:M | `src/match/` (etapa comb) | +2–3 | T10 |
 | T14 | Referencias ruidosas (`ar_ref_noise`) | `src/match/` (etapa ref) | +3–4 | T4 |
 | T15 | Clases de excepción a cero o con mucho FP | `src/exceptions/` | +2–4 | T10, T6 |
+| **T16** | **Explicar la brecha ventana 82 frente a LIVE 72** | `tools/`, `src/final/` | protege FINAL (±10) | T10 |
 
 ---
 
@@ -198,19 +208,24 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
 - **Dueño:**
 - **Problema:** cada módulo se ejecuta a mano y los ficheros de `work/<fase>/` se desfasan. La ventana 52,62 se puntuó
   con un `side_links.parquet` antiguo (sólo `T2.dd_batch` + `T2.dd_return`, de las 12:29) y sin `side_links_ap.parquet`.
-  Lo que hoy da T2 completo (ventana T2 sola 48,71 con P 99,83 %) no llega al matcher.
+  El 82,18 de javier (13:54) depende de ficheros y código locales que no están en `main`: `src/remit/` no está y
+  `src/match` no lee `side_links_ap`. **Primer paso: javier sube su código de T6 y la lectura de `side_links_ap` en T3.**
+  Hay riesgo de pares duplicados: `src/sidefiles` (ouyang) también genera `pr`/`card`/`chq`. Si se regeneran los dos,
+  T3 leería dos veces la misma línea (sin deduplicar en `SL`).
 - **Salida:** `src/pipeline/__main__.py`: `python -m src.pipeline --phase <fase> [--from <etapa>]` ejecuta en orden
   base_parquet → sidefiles (+ sidefiles_ap) → party → pdffacts → remit → nonitem → match → exceptions → submit
   (→ score en `window`/`sample`). Antes de cada etapa comprueba que sus entradas son más nuevas que su salida y escribe
   `work/<fase>/manifest.json` (etapa, commit, filas, segundos, sha de entradas). Es la base de `src/final/run_final.sh`.
-- **Fusión de side_links:** T3 lee `side_links.parquet` **y** `side_links_ap.parquet`. Si los dos proponen el mismo
-  `bank_txn_id`, gana el de mayor `confidence`, y a igualdad el de T2 (`src/sidefiles`). Nunca se mezclan los pares
-  de dos fuentes en la misma línea. Antes, T2 y T2b acuerdan en el tablero quién se queda cada regla (hoy se
-  solapan en tarjetas, cheques y payment_runs) para no mantener dos implementaciones.
+- **Fusión de side_links:** T3 lee `side_links.parquet` **y** `side_links_ap.parquet`, deduplicando por
+  `(bank_txn_id, item_id)`. Si los dos proponen pares distintos para el mismo `bank_txn_id`, gana el conjunto con mayor
+  `confidence` media, y a igualdad el de mayor P medida en la ventana. Nunca se mezclan los pares de dos fuentes en la
+  misma línea. **Propuesta:** `payment_runs`/tarjetas/cheques salen sólo de `src/sidefiles_ap` (P 99,98 %) y
+  `src/sidefiles` se queda con remesas, devoluciones de recibos y `supplier_dd`. ouyang y javier lo confirman en el
+  tablero.
 - **Hecho cuando:** un único comando reproduce la nota de la ventana desde cero; `manifest.json` lista todas las etapas.
 - **Verificar:** en la ventana, `ar_card_settlement`, `ar_cheque_deposit`, `ap_confirming`, `ap_payment_multi` y
   `ap_payment_single` con R ≥ 95 % y P ≥ 98 % en el informe de segmentos de `tools/score.py`; score de la ventana
-  ≥ 62; LIVE subido y apuntado en `SUBMISSIONS.md`.
+  ≥ 80 en un clon limpio de `main`; LIVE subido y apuntado en `SUBMISSIONS.md`.
 
 ### T11 · Cliente LLM común
 - **Dueño:**
@@ -280,9 +295,29 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
   - `UNIDENTIFIED` sólo si ningún candidato del tercero pasa el umbral.
 - **Verificar:** F1 ≥ 0,8 en las 10 clases sobre la ventana (con el pipeline real, no con el mock); macro-F1 ≥ 0,8.
 
+### T16 · Explicar la brecha ventana frente a LIVE (82,18 frente a 71,55)
+- **Dueño:**
+- **Por qué importa:** FINAL se parece a LIVE, no a la ventana. Si la ventana sobreestima 10 puntos, todos los ajustes
+  hechos con ella son sospechosos y el único envío FINAL puede salir mucho peor de lo esperado.
+- **Hipótesis a comprobar, en orden:**
+  1. **Fuga en la ventana:** tablas, densidades o umbrales aprendidos con TRAIN completo (incluida la ventana) en vez
+     de TRAIN < 2024-07. Revisar `work/party_model/` (`pre_window` frente a `full`), `src/nonitem` (¿patrones aprendidos
+     con la ventana?), `dd_return_lag.csv` y cualquier tabla en `work/learn/`.
+  2. **Saldos iniciales:** en la ventana, `open_at_start_cents` sale del golden (perfecto); en LIVE sale de
+     `open_items_at_start.csv.gz`. Comparar el % de pares que apuntan a partidas "cerradas" o que no existen.
+  3. **Cobertura de ficheros de detalle en LIVE:** pares de `side_links_ap` por línea y mes en LIVE frente a la
+     ventana (¿hay runs/lotes de LIVE cuyo detalle cae fuera de la fase?).
+  4. **Drift:** informe por mes de LIVE (% de líneas con partida, % `UNIDENTIFIED`, % de cada etapa `rule`) frente a
+     la ventana; buscar caídas en 2025-09 (avisos), 2025-10 (Moncayo camt) y en ZA01.
+  5. **Mezcla de segmentos:** si LIVE tiene más `ar_short_dispute`/`ar_1toN_remittance` (T6 débil), la brecha es
+     estructural y no se debe a una fuga.
+- **Hecho cuando:** brecha explicada por hipótesis con cifras; las fugas corregidas; la ventana *honesta* recalculada.
+- **Verificar:** tras corregir, |ventana − LIVE| ≤ 3 puntos, o la diferencia queda justificada por segmentos en
+  `SUBMISSIONS.md`. A partir de ahí, cada envío LIVE apunta la brecha.
+
 ---
 
-## Reglas anti-sobreajuste (obligatorias para T6–T15)
+## Reglas anti-sobreajuste (obligatorias para T6–T16)
 
 1. **Aprender sólo con TRAIN < 2024-07** (`WINDOW_START`) y medir en la ventana. Todo umbral, tabla o densidad
    aprendida con datos de la ventana se marca en el PR como *in-sample* y no cuenta como mejora.
@@ -311,7 +346,7 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
 
 | Hora | ouyang | javier | galileo | libre / agente |
 |---|---|---|---|---|
-| 14:00–14:30 | **T10** fusión side_links + pipeline | T6 parsers deterministas | T15 sobre pipeline real | **T11** `src/llm/` |
+| 14:00–14:30 | **T10** fusión side_links + pipeline | **subir T6 + lectura de side_links_ap a `main`** | T15 sobre pipeline real | **T16** brecha + **T11** `src/llm/` |
 | 14:30–16:00 | T12 FX / AP | T6 enlace banco + T3 etapa `remit` | T15 + T13 | T14 |
 | 16:00–17:00 | T9 ensayo sin red | T9 ensayo + LIVE | ajuste de umbrales (4 trimestres) | T11 en T7/T6 para el drift |
 | 17:00 | simulacro FINAL con LIVE | | | |
