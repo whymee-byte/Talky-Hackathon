@@ -1,4 +1,4 @@
-# Tareas
+﻿# Tareas
 
 Ordenadas por **puntos esperados** (estimación a partir de `docs/SCORING.md`; T1 es requisito de casi todo y va
 justo después de T0). Cada tarea vive en **su carpeta** `src/<módulo>/`, lee/escribe los ficheros de
@@ -93,7 +93,7 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
   por formato (N43/MT940/camt) y en `ar_third_party_*`, `ar_new_iban`.
 
 ### T5 · Motor de excepciones e importes
-- **Dueño:**
+- **Dueño:** galileo
 - **Entrada:** `pairs_raw.parquet` (§7b) — empezar con el mock del golden. **Salida:** `allocations.parquet` (§8).
 - **Hecho cuando:** implementa `POLICIES.md` §2–3 como reglas generales: `FX_DIFFERENCE` (divisa distinta, banda
   ≤ 3 %, reemplaza `SHORT_*`/vacío, abonos sin excepción), `SHORT_DISCOUNT` (términos + fecha ≤ emisión + días + 3 +
