@@ -21,7 +21,9 @@ def _iter_statement_files(input_dir: Path, excluded: set[Path]) -> Iterator[Path
     yield from (
         path
         for path in sorted(input_dir.rglob("*"))
-        if path.is_file() and path.resolve() not in excluded
+        if path.is_file()
+        and path.resolve() not in excluded
+        and path.suffix.lower() != ".jsonl"
     )
 
 
