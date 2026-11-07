@@ -21,8 +21,10 @@ de columna del contrato §1.
 | `master` | prefijos del nombre actual, comercial e **impreso en facturas** (renombrados) de cada tercero; cubre "ORD. X" (confirming) y "EXPTE … X" (agencias) porque se buscan en cualquier posición | 0,70–0,90 / nº de homónimos |
 | `doc_ref` | tokens del texto (también 2–3 tokens pegados: "FV25 0109359") = nº impreso, pedido o nº de proveedor de una partida | 0,85 alfanumérico / 0,70 dígitos, ÷ nº de terceros; si > 5 terceros sólo confirma a un candidato ya propuesto |
 | `amount` | el candidato tiene una partida emitida ≤ 400 días antes por exactamente el importe (desempata homónimos) | 0,6, nunca sola |
+| `payrun` | `run_id` (`PR…`/`CF…`) del texto + `debtor_account_id = account_id` (los run_id se repiten entre sociedades) + importe (o secuencia de 6 dígitos) → fila de beneficiario de `payment_runs` → tercero por nº de documento **e importe** del documento, IBAN o nombre (maestro e impreso) | 0,96 doc / 0,95 IBAN / 0,90 nombre, ÷ homónimos |
 | `fuzzy` | rapidfuzz `partial_ratio` por **nombre único** (no por fila) sólo para líneas sin candidato | ≤ 0,5 |
 
+Un tercero con `created` posterior a la fecha de la línea se descarta.
 Sociedad: un tercero sólo es candidato si su sociedad es la de la cuenta o un par aprendido (payment factory ES00 →
 ES01/ES02/PT01).
 

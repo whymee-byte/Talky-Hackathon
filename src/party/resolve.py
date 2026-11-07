@@ -5,6 +5,7 @@ Evidence families (each row keeps rule, confidence, evidence):
   mandate   SEPA mandate id in text -> customer
   learned   text prefix seen before for exactly this party (history, per line entity)
   master    text prefix = start of a current/trade/printed party name (incl. "ORD. X", "EXPTE ... X")
+  payrun    run_id of our payment file in the text + debtor account + amount/sequence -> beneficiary (payrun.py)
   fuzzy     rapidfuzz on unique extracted names, only for lines with nothing better (see fuzzy.py)
 Confidences of different families are combined as 1 - prod(1 - c); top 3 per line are kept.
 """
@@ -80,6 +81,9 @@ def candidates(con, phase, model):
                 "rule VARCHAR, conf DOUBLE, evidence VARCHAR)")
     for x in red:
         con.execute(f"INSERT INTO cand {x}")
+    # payment runs: run_id in the text + debtor account + amount/sequence -> beneficiary -> party (see payrun.py)
+    from . import payrun
+    payrun.add(con, phase, model)
     # doc_ref: text tokens (also 2-3 adjacent tokens glued: banks split "FV25-0109359") = an item's printed number
     base_ = "train" if phase in ("window", "learn") else phase
     from .common import src as _src
@@ -150,11 +154,16 @@ def rank(con, phase, extra=None):
     """Combine evidence per (line, party) and keep the top 3."""
     union = "SELECT * FROM cand" + (f" UNION ALL SELECT * FROM {extra}" if extra else "")
     out = f"{out_dir(phase)}/line_party.parquet"
+    from .common import master
     con.execute(f"""COPY (
-      WITH best AS (   -- strongest evidence per family
-        SELECT bank_txn_id, party_id, fam, arg_max(rule, conf) AS rule, max(conf) AS conf,
+      WITH created AS (SELECT customer_id AS party_id, created FROM {master('customers')}
+                       UNION ALL SELECT supplier_id, created FROM {master('suppliers')}),
+      best AS (   -- strongest evidence per family; a party created after the line cannot be its party
+        SELECT c.bank_txn_id, c.party_id, fam, arg_max(rule, conf) AS rule, max(conf) AS conf,
                arg_max(evidence, conf) AS evidence
-        FROM ({union}) GROUP BY ALL),
+        FROM ({union}) c JOIN ln l USING (bank_txn_id) LEFT JOIN created cr USING (party_id)
+        WHERE cr.created IS NULL OR cr.created <= l.booking_date
+        GROUP BY ALL),
       comb AS (
         SELECT bank_txn_id, party_id,
                1 - exp(sum(ln(greatest(1 - least(conf, 0.999), 1e-9)))) AS confidence,
