@@ -4,6 +4,34 @@ Cada módulo lee las entradas oficiales (`data/bankrec-docs-and-masters/<fase>/�
 módulos, y escribe **uno** de los ficheros de abajo. Mientras se respete el contrato, cada módulo se puede desarrollar,
 probar y reemplazar por separado.
 
+> **Fusión 11:00:** contrato único del equipo. Integra de la propuesta de galileogUCM la tabla de inputs oficiales,
+> la distinción oficial/derivado, los invariantes de partidas y la lista de validaciones previas a exportar. Se mantienen
+> los ficheros por módulo de este documento (encajan 1:1 con `TASKS.md`). Diferencias resueltas en `DECISIONS.md` D12.
+
+## Inputs oficiales (no se reinterpretan)
+
+Los siguientes ficheros son oficiales y no deben confundirse con contratos nuevos:
+
+| Input oficial | Uso | Observaciones contractuales |
+|---|---|---|
+| `bank_transactions.csv.gz` | Movimientos bancarios normalizados | Una fila por línea bancaria, sin duplicados. `bank_txn_id` es estable y único en todo el dataset. |
+| `ar_invoices.csv.gz`, `ap_invoices.csv.gz` | Facturas AR/AP | Incluyen importes, fechas, contraparte y método de pago. |
+| `credit_notes.csv.gz` | Abonos AR/AP | `total_amount` es positivo; puede referenciar una factura. |
+| `open_items_at_start.csv.gz` | Saldos abiertos iniciales | Sólo LIVE/FINAL; contiene el importe abierto al inicio de la fase. |
+| `remittance_advices/...` e `index.csv` | Avisos de pago | PDF/CSV/XLSX/TXT; pueden llegar después del efectivo. |
+| `pdfs/...` e `index.csv` | PDFs documentales | Texto libre con contexto no presente en CSV. |
+| `direct_debit_batches/...` | Remesas de domiciliación | Una fila por recibo y un total de lote. |
+| `card_settlements/...` | Liquidaciones de tarjetas | Una fila por pedido, con `gross`, `fee` y `net`. |
+| `cheque_deposits/...` | Depósitos de cheques | Una fila por cheque y total de depósito. |
+| `payment_runs/...` | Pagos salientes | Una fila por documento pagado, con tipos de ejecución distintos. |
+| `masters/...` | Maestros y catálogos | Entidades, cuentas, clientes, proveedores, categorías, términos y FX. |
+| `train/golden_allocations.csv.gz` | Etiquetas TRAIN | Sólo TRAIN; no es un input disponible para LIVE/FINAL. |
+
+Los nombres y columnas de estos inputs se conservan conforme al diccionario oficial. Un pipeline puede añadir metadatos internos, pero no debe sobrescribir ni atribuir esos campos a la fuente si son derivados.
+
+**Oficial vs derivado:** una columna copiada de un input conserva su nombre; toda columna calculada por nosotros es
+derivada y nunca sobrescribe a la oficial. Nunca se inventan ids oficiales (`bank_txn_id`, `item_id`).
+
 ## Convenciones comunes
 
 - Formato: **Parquet**, uno por fase, en `work/<fase>/<fichero>.parquet` (`<fase>` ∈ `sample`, `train`, `window`,
@@ -88,6 +116,9 @@ Una fila por `item_id` visible en la fase (incluye las abiertas al inicio).
 | `payment_terms`, `discount_pct`, `discount_days` | str, float?, int? | desde `payment_terms.csv` |
 | `payment_method` | str? | `transfer` / `dd` / `card` / `cheque` |
 | `related_doc` | str? | factura que rectifica un abono |
+
+**Invariantes:** `item_id` único; sólo `ARI/ARC/API/APC`; importes positivos; `open_at_start_cents ≤ total_cents`;
+divisa no nula; proformas y avisos nunca son partidas.
 
 *Mock desde golden:* no aplica (es la entrada). Para evaluar en una **ventana** de TRAIN, `open_at_start_cents` = total −
 lo asignado por el golden antes de la ventana (sumando `RETURNED`, a 0 si la excepción es de liquidación completa).
@@ -213,3 +244,24 @@ categoría; `UNIDENTIFIED` lleva categoría y excepción `UNIDENTIFIED`.
 - `out/<fase>_<yyyymmdd-hhmm>_<git-sha>.csv.gz`: columnas `bank_txn_id,item_id,amount,category,exception`, importe con
   punto y 2 decimales.
 - `out/<fase>_….score.json` (sólo TRAIN/ventanas): salida de `starter/bankrec_score.py` + desglose por segmento.
+
+### Reglas de validación del servidor (las replica `tools/validate.py`)
+
+1. Cabecera con exactamente cinco columnas.
+2. Cada `bank_txn_id` pertenece a la fase.
+3. No se duplica el par (`bank_txn_id`, `item_id`), y hay como máximo una fila sin item por movimiento.
+4. Un movimiento no puede mezclar filas con item y una fila de categoría.
+5. `amount` es obligatorio y no negativo cuando hay item, y vacío sin item.
+6. `category` y `exception` pertenecen a sus listas cerradas.
+
+### Comprobaciones antes de exportar
+
+1. Comparar el conjunto de `bank_txn_id` de decisiones contra el input de la fase y reportar faltantes, extras y duplicados.
+2. Validar tipos, nulos, signos, monedas e IDs contra los maestros y tablas oficiales.
+3. Validar invariantes por movimiento con una agregación, especialmente mezcla item/categoría y multiplicidad de filas sin item.
+4. Validar que todo `item_id` existe y es conciliable, sin convertir proformas o documentos auxiliares.
+5. Validar las listas cerradas desde `masters/categories.csv` y `FORMAT.md`.
+6. Serializar una copia CSV y comprobar cabecera, tamaño descomprimido, número de filas y lectura posterior con DuckDB/Polars.
+7. En TRAIN, comparar con `golden_allocations.csv.gz` sólo para evaluación local; no incluir etiquetas, `segment` ni `difficulty` en LIVE/FINAL.
+
+Este contrato separa deliberadamente los datos oficiales de los artefactos derivados: los primeros son la autoridad del reto; los segundos permiten escalar, depurar y explicar una solución futura, pero nunca alteran el formato de entrega ni sus reglas.

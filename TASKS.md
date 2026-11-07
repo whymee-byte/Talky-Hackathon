@@ -10,6 +10,12 @@ Al acabar: `DONE T<n>` con la medida de "Verificar" pegada. Reglas completas en 
 Horario (web): datos FINAL **18:00** · cierre de envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main`
 y verificado a las **17:30** entra en el pipeline de FINAL.
 
+> **Fusión 11:00:** este plan integra la propuesta paralela de galileogUCM (8 tareas por capas). Equivalencias:
+> su T1 ingesta → T1 · T2 ítems y saldos → T1 · T3 PDFs y remesas → T6 + T8 · T4 candidatos → T3 + T4 + T2 ·
+> T5 excepciones y categorías → T5 + T7 · T6 saldo temporal y devoluciones → T3 + T5 · T7 evaluación → T0 ·
+> T8 pipeline → T0 + T9. Sus comprobaciones de robustez se han incorporado abajo (marcadas *[g]*). Su T1 incluía
+> parsear los extractos brutos: no hace falta, `bank_transactions.csv.gz` ya es esa vista normalizada y sin duplicados.
+
 > `src/recon.py` es un prototipo monolítico anterior (≈ 51,6 en `sample`, no comparable con la ventana): úsalo como
 > referencia de reglas, no como base de código.
 
@@ -37,6 +43,9 @@ y verificado a las **17:30** entra en el pipeline de FINAL.
   `UNIDENTIFIED/UNIDENTIFIED` (cobros) o `BANK_FEES` (pagos); (2) `validate.py` reproduce todas las reglas de
   `FORMAT.md` con nº de fila; (3) `score.py` puntúa `sample` y la ventana con `starter/bankrec_score.py` y desglosa por
   métrica y segmento; (4) el primer envío LIVE está hecho **tras confirmar** en `SUBMISSIONS.md`.
+- **Robustez *[g]*:** bloqueo que impide subir si falla cualquier validación; manifiesto junto a cada fichero (commit,
+  configuración, conteos de filas/líneas/clases); pruebas de mutación del CSV (`;` y coma decimal, gzip, BOM, ids de
+  otra fase, mezcla partida/categoría, límites de tamaño); ejecución repetida en limpio = mismo fichero.
 - **Verificar:** un fichero roto a propósito falla con nº de fila; el del starter puntúa igual con `score.py` y con
   `starter/score_train.py`; la nota LIVE queda apuntada en `SUBMISSIONS.md`.
 
@@ -48,6 +57,9 @@ y verificado a las **17:30** entra en el pipeline de FINAL.
   `month_hint`, `is_return_hint` en N43, MT940 y camt (incluido Moncayo camt desde 2025-10); partidas AR+AP+abonos con
   condiciones de pago, `open_items_at_start` en LIVE/FINAL; ventana con saldo = total − asignado por el golden antes de
   2024-07-01 (sumando `RETURNED`; 0 si la excepción liquida entera).
+- **Robustez *[g]*:** idempotente; las líneas o documentos que no se puedan interpretar quedan **diagnosticados** en
+  `work/<fase>/base_issues.parquet`, nunca descartados en silencio; no confundir `document_number` con `item_id`;
+  proformas y avisos nunca entran como partidas.
 - **Verificar:** `count(*) = count(distinct bank_txn_id)` = líneas de la fase; % de pares del golden cuyo `doc_norm`
   está en `doc_tokens` ≥ 21,8 % (búsqueda literal medida); `cp_name_norm` no vacío en ≥ 90 % de cobros por
   transferencia; en LIVE `sum(open_at_start)` por tipo = `open_items_at_start`; en la ventana ≥ 99 % de pares del golden
@@ -73,6 +85,8 @@ y verificado a las **17:30** entra en el pipeline de FINAL.
   fila); prioridad `side_links` → avisos → referencia de documento → tercero + importe (exacto, subset-sum con abonos,
   FIFO, mes de servicio, factura sustituta) → sin partida; si no hay candidato seguro, **abstiene** (la línea queda
   para T7 / `UNIDENTIFIED`).
+- **Robustez *[g]*:** ranking y desempates deterministas (misma entrada → mismo fichero); un importe igual nunca basta
+  por sí solo para casar; cada abstención guarda el motivo en `evidence`.
 - **Verificar:** con **todos** los mocks del golden, score de ventana ≥ 90 (techo); con módulos reales, mejora sobre
   la heurística de referencia (≈ 61); tabla por segmento en el PR; precisión de pares ≥ 97 %.
 
@@ -102,6 +116,8 @@ y verificado a las **17:30** entra en el pipeline de FINAL.
 - **Hecho cuando:** parsea pdf/csv/xlsx/txt (también el cambio de formato del gran cliente en sep-2025); resuelve la
   referencia del cliente a `item_id` (sin prefijo, nº de pedido, nº antiguo); captura deducción y motivo. LLM sólo para
   inferir la **plantilla** de cada maquetación nueva (una llamada por maquetación, en caché), nunca por aviso.
+- **Robustez *[g]*:** cada dato extraído apunta a su fichero y página/fila/celda y a la versión del parser; separar
+  "hecho extraído" de "interpretación"; lo ambiguo se marca, no se inventa.
 - **Verificar:** ≥ 95 % de líneas de aviso con `item_id` en la ventana; con avisos, recall de pares ≥ 95 % en
   `ar_1toN_remittance` y `ar_short_dispute`; nº de avisos parseados por mes en LIVE sin caída en sep-2025.
 
@@ -120,6 +136,7 @@ y verificado a las **17:30** entra en el pipeline de FINAL.
 - **Hecho cuando:** extrae plazos, retención, anticipo a deducir, "anula y sustituye", mes de servicio, rappel
   compensado/pagado, abono reembolsado/compensado, factoring, nuevo IBAN (ES/FR/DE/EN…); regex primero, LLM sólo por
   plantilla de PDF desconocida.
+- **Robustez *[g]*:** igual que T6 (trazabilidad a página y versión del parser; lo ambiguo se marca).
 - **Verificar:** en la ventana, ≥ 90 % de las partidas de `ar_instalment`, `ar_retention`, `ar_advance_deduction`,
   `ar_replaced_invoice`, `ar_same_amount_month`, `ar_new_iban` tienen su hecho; 20 PDFs revisados a mano sin falsos
   positivos.

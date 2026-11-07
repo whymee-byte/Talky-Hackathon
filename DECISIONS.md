@@ -71,3 +71,15 @@ medida de la ventana o de LIVE).
 - A) Español (como los docs existentes).
 - B) Inglés.
 - **Recomendación:** A para docs del equipo; nombres de código, columnas y reglas (`rule`) en inglés.
+
+### D12 · Contratos: dos propuestas en paralelo (fusión 11:00)
+galileogUCM propuso artefactos por capas (`artifacts/<fase>/01_…05_*.parquet`, importes `DECIMAL(20,6)`, tabla de
+evidencias atómicas + candidatos + decisiones). El otro diseño usa un fichero por módulo en `work/<fase>/` con importes en
+céntimos `int64`.
+- A) Ficheros por módulo en `work/`, céntimos `int64` (comparaciones exactas, rápido en duckdb/polars, encaja 1:1 con
+  `TASKS.md` y con los mocks del golden).
+- B) Capas de galileog: `03_evidence` + `04_match_candidates` + `05_allocation_decisions`, `DECIMAL`.
+- C) A, añadiendo de B la tabla de inputs oficiales, la distinción oficial/derivado y las validaciones previas (ya hecho).
+- **Recomendación:** C. Lo que más vale de B (evidencia trazable) ya lo cubren `rule/confidence/evidence`. Si el equipo
+  quiere una tabla de candidatos con ranking (`04_match_candidates`), cabe como salida de depuración de T3 sin cambiar
+  ningún contrato. **Pendiente de que galileog lo confirme.**
