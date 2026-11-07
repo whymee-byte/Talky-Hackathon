@@ -10,6 +10,8 @@ anywhere in the phase are never reused, and an item picked by two lines is given
           when the bank shows the instructed amount in another currency (FX line, POLICIES §3 FX_DIFFERENCE)
   pool    open, unallocated AR invoices and credit notes (signed: ARC negative) of the line's parties (T4 rank 1 and
           the parties of the items already on the line), in the target currency, issued on or before the booking date
+  alt     receipts with no item and no solution over that pool: each of T4's rank 2-3 parties on its own; accepted
+          only if exactly one solution over all of them (rule suffix _alt)
   search  per line, over a small pool (numpy, meet-in-the-middle on <= MITM_MAX items): every subset whose signed sum
           equals the target within 1 cent; over a bigger pool: runs of consecutive items in issue-date order.
           A line is accepted only when exactly one solution exists.
@@ -34,9 +36,11 @@ from src.common import REPO
 MITM_MAX = 22      # meet-in-the-middle over 2 x 2^11 subsets
 RUN_MAX = 400      # pool cap for the consecutive-run search
 TOL = 1            # cents
+ALT_RANKS = 3      # T4 ranks tried when rank 1 has no solution (0 = off)
+ALT_MIN_CONF = 0.0
 AGE_MAX = {"ARI": 365, "ARC": 240}   # days between issue and receipt (TRAIN golden: 99.7 % / 99.6 % of AR pairs)
-DEFAULT_RULES = "subset,run"
-CONF = {"subset": 0.9, "run": 0.85}
+DEFAULT_RULES = "subset,run,subset_alt,run_alt"
+CONF = {"subset": 0.9, "run": 0.85, "alt": 0.6}
 
 
 def _sums(v: np.ndarray) -> np.ndarray:
@@ -121,40 +125,50 @@ def build(phase: str, alloc: str | None = None, rules: str = DEFAULT_RULES, work
       WHERE i.currency <> LT.tcur)""")
     lp = f"{w}/line_party.parquet"
     con.execute(f"""CREATE TABLE LP AS
-      SELECT bank_txn_id, party_id FROM '{lp}' WHERE rank = 1 AND bank_txn_id IN (SELECT bank_txn_id FROM LT)
+      SELECT bank_txn_id, party_id, 'p1' grp FROM '{lp}' WHERE rank = 1 AND bank_txn_id IN (SELECT bank_txn_id FROM LT)
       UNION
-      SELECT a.bank_txn_id, i.party_id FROM A a JOIN I i USING (item_id) WHERE a.bank_txn_id IN (SELECT bank_txn_id FROM LT)""")
+      SELECT a.bank_txn_id, i.party_id, 'p1' FROM A a JOIN I i USING (item_id) WHERE a.bank_txn_id IN (SELECT bank_txn_id FROM LT)""")
+    if ALT_RANKS:
+        # receipts with no item: T4's runner-up parties, each on its own, as a fallback when rank 1 has no solution
+        con.execute(f"""INSERT INTO LP SELECT p.bank_txn_id, p.party_id, 'alt' FROM '{lp}' p JOIN LT t USING (bank_txn_id)
+          WHERE p.rank BETWEEN 2 AND {ALT_RANKS} AND t.nit = 0 AND p.confidence >= {ALT_MIN_CONF}
+            AND p.party_id NOT IN (SELECT party_id FROM LP q WHERE q.bank_txn_id = p.bank_txn_id)""")
     con.execute(f"""CREATE TABLE POOL AS
-      SELECT t.bank_txn_id, i.item_id, i.kind, i.open_c, i.issue_date,
-             CASE WHEN i.kind = 'ARC' THEN -i.open_c ELSE i.open_c END sv
+      SELECT t.bank_txn_id, CASE LP.grp WHEN 'p1' THEN 'p1' ELSE LP.party_id END grp, i.item_id, i.kind, i.open_c,
+             i.issue_date, CASE WHEN i.kind = 'ARC' THEN -i.open_c ELSE i.open_c END sv
       FROM LT t JOIN LP USING (bank_txn_id) JOIN I i ON i.party_id = LP.party_id AND i.currency = t.tcur
       WHERE i.issue_date <= t.bd AND t.bd - i.issue_date <= CASE i.kind WHEN 'ARC' THEN {AGE_MAX['ARC']} ELSE {AGE_MAX['ARI']} END
         AND i.item_id NOT IN (SELECT item_id FROM USED)""")
-    df = con.sql(f"""SELECT p.bank_txn_id, any_value(t.rem) rem, list(p.item_id ORDER BY p.issue_date, p.item_id) ids,
+    df = con.sql(f"""SELECT p.bank_txn_id, p.grp, any_value(t.rem) rem, list(p.item_id ORDER BY p.issue_date, p.item_id) ids,
                             list(p.sv ORDER BY p.issue_date, p.item_id) v, count(*) n
-                     FROM POOL p JOIN LT t USING (bank_txn_id) GROUP BY 1 HAVING count(*) <= {RUN_MAX}""").df()
-    print(f"[{phase}] cnfx: {con.sql('SELECT count(*) FROM LT').fetchall()[0][0]} target lines, {len(df)} with a pool "
+                     FROM POOL p JOIN LT t USING (bank_txn_id) GROUP BY 1, 2 HAVING count(*) <= {RUN_MAX}
+                     ORDER BY 1, p.grp <> 'p1', 2""").df()
+    print(f"[{phase}] cnfx: {con.sql('SELECT count(*) FROM LT').fetchall()[0][0]} target lines, {len(df)} pools "
           f"({time.time() - t0:.0f}s)")
-    picks, diag = [], []
-    for b, rem, ids, v, n in df.itertuples(index=False):
+    sols = {}   # line -> list of (grp, how, n, selection)
+    diag = []
+    for b, grp, rem, ids, v, n in df.itertuples(index=False):
         v = np.asarray(v, dtype=np.int64)
         rem = int(rem)
         if rem <= 0:
             continue
         if n <= MITM_MAX:
-            sol = subset_solutions(v, rem)
-            how = "subset"
-            sel = [np.nonzero(s)[0] for s in sol]
+            how, sel = "subset", [np.nonzero(m)[0] for m in subset_solutions(v, rem)]
         else:
-            sol = run_solutions(v, rem)
-            how = "run"
-            sel = [np.arange(i, j) for i, j in sol]
-        diag.append((b, int(n), how, len(sel)))
-        if len(sel) != 1:
+            how, sel = "run", [np.arange(i, j) for i, j in run_solutions(v, rem)]
+        diag.append((b, grp, int(n), how, len(sel)))
+        sols.setdefault(b, []).extend((grp, how, int(n), ids, x, rem) for x in sel)
+    picks = []
+    for b, lst in sols.items():
+        p1 = [x for x in lst if x[0] == "p1"]
+        cand = p1 if p1 else [x for x in lst if x[0] != "p1"]
+        if len(cand) != 1:
             continue
-        for k in sel[0]:
-            picks.append((b, ids[k], how, int(n), len(sel[0]), rem))
-    pd.DataFrame(diag, columns=["bank_txn_id", "n", "how", "nsol"]).to_parquet(f"{w}/cnfx_diag.parquet")
+        grp, how, n, ids, x, rem = cand[0]
+        how = how if grp == "p1" else how + "_alt"
+        for k in x:
+            picks.append((b, ids[k], how, n, len(x), rem))
+    pd.DataFrame(diag, columns=["bank_txn_id", "grp", "n", "how", "nsol"]).to_parquet(f"{w}/cnfx_diag.parquet")
     P = pd.DataFrame(picks, columns=["bank_txn_id", "item_id", "how", "n", "k", "rem"])
     con.register("Pdf", P)
     con.execute("CREATE TABLE PICK AS SELECT * FROM Pdf")
@@ -169,7 +183,7 @@ def build(phase: str, alloc: str | None = None, rules: str = DEFAULT_RULES, work
              CASE WHEN tcur <> lcur AND kind = 'ARI' THEN 'FX_DIFFERENCE' ELSE '' END exception,
              'T3x.' || how || '.' || CASE WHEN tcur <> lcur THEN 'fx' WHEN has_cn THEN 'cn' ELSE 'plain' END
                || CASE WHEN nit > 0 THEN '.add' ELSE '' END rule,
-             CASE how WHEN 'subset' THEN {CONF['subset']} ELSE {CONF['run']} END confidence,
+             CASE how WHEN 'subset' THEN {CONF['subset']} WHEN 'run' THEN {CONF['run']} ELSE {CONF['alt']} END confidence,
              'party open items: ' || k || ' of ' || n || ' sum to the ' || tcur || ' amount left ' || rem
                || ' (unique ' || how || ')' evidence
       FROM f""")
