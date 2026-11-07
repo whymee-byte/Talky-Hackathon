@@ -41,7 +41,7 @@ RUN_MAX = 400      # pool cap for the consecutive-run search
 TOL = 1            # cents
 ALT_RANKS = 3      # T4 ranks tried when rank 1 has no solution (0 = off)
 ALT_MIN_CONF = 0.0
-WINDOWS = [(b, a) for a in (0, 10, 31) for b in (31, 62, 93, 186)]   # (days back, days ahead) of the due date
+WINDOWS = [(b, 0) for b in (31, 62, 93)]   # items already due, up to 1-3 months back (wider: window SCORE lower)
 WIN_CN = False
 FIFO_TIES = False  # (window: ~45 % right, off)
 AMT_UNIQUE = False  # unique exact amount in the entity, any party: window 17 % right, breaks UNIDENTIFIED (off)  # solutions that differ only by same-amount items -> the oldest items
