@@ -123,6 +123,11 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
        least(abs(abs(line_cash_i)-round(invoice_total*(1-0.0125))),
              abs(abs(line_cash_i)-round(invoice_total*(1-0.015))),
              abs(abs(line_cash_i)-round(invoice_total*(1-0.10)))) <= greatest(currency_pairs,1)) AS wht_candidate,
+      (country IN ('MX','BR','MA') AND kind='ARI' AND n_pair>1 AND
+       least(abs((abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.0125)),
+             abs((abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.015)),
+             abs((abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.10)))
+         <= greatest(currency_pairs,1)) AS wht_item_candidate,
       (kind='ARI' AND non_sepa AND open_c>0 AND diff>0 AND diff <= 0.02*open_c AND
        diff / NULLIF(item_units_per_eur,0) <= 6000) AS bank_charge_ok,
       (upper(line_currency)<>upper(item_cur)) AS is_fx,
@@ -132,18 +137,20 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
       FROM G""")
     # Populate the policy decision from grouped pair features. Keep rules auditable at row granularity.
     con.execute("""CREATE TEMP TABLE R AS SELECT *,
-      CASE
+       CASE
        WHEN open_before_cents<=0 AND normal_direction THEN 'DUPLICATE_PAYMENT'
        WHEN reverse_direction THEN 'RETURNED'
        WHEN is_fx AND kind IN ('ARI','API') AND fx_band THEN 'FX_DIFFERENCE'
        WHEN NOT is_fx AND kind='ARI' AND discount_ok THEN 'SHORT_DISCOUNT'
-       WHEN NOT is_fx AND country IN ('MX','BR','MA') AND kind IN ('ARI','API') AND wht_candidate THEN 'SHORT_WITHHOLDING'
+       WHEN NOT is_fx AND country IN ('MX','BR','MA') AND kind IN ('ARI','API') AND
+            (wht_candidate OR (wht_item_candidate AND wht_item_candidates=1)) THEN 'SHORT_WITHHOLDING'
        WHEN NOT is_fx AND n_pair=1 AND bank_charge_ok THEN 'SHORT_BANK_CHARGES'
        WHEN NOT is_fx AND n_pair=1 AND kind='ARI' AND diff < -1 THEN 'OVERPAYMENT'
        WHEN has_dispute AND NOT exact_same THEN 'SHORT_DISPUTE'
        WHEN abs(line_cash_i) < abs(signed_open_sum)-greatest(currency_pairs,1) THEN 'PARTIAL'
        ELSE '' END exception_code
-      FROM D""")
+      FROM (SELECT *, sum(CASE WHEN wht_item_candidate THEN 1 ELSE 0 END)
+                      OVER (PARTITION BY bank_txn_id,item_cur) wht_item_candidates FROM D) W""")
     # Shared multi-item partial: exact amount is allocated to all normal rows except one absorber.
     # Candidate scoring uses policy-measured total fractions, with most-recent invoice deterministic fallback.
     con.execute("""CREATE TEMP TABLE A AS SELECT *,
@@ -167,7 +174,9 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
       row_number() OVER (PARTITION BY bank_txn_id ORDER BY absorber_candidate DESC, issue_date DESC NULLS LAST, item_id DESC) absorber_rank
       FROM R""")
     con.execute("""CREATE TEMP TABLE FINAL AS SELECT *,
-       CASE WHEN kind IN ('ARC','APC') AND exception_code NOT IN ('DUPLICATE_PAYMENT','RETURNED')
+       CASE WHEN exception_code='PARTIAL' AND wht_item_candidates=1 AND kind IN ('ARI','API')
+                  AND NOT wht_item_candidate THEN ''
+            WHEN kind IN ('ARC','APC') AND exception_code NOT IN ('DUPLICATE_PAYMENT','RETURNED')
                   AND abs(applied_i-open_c)<=greatest(1,0.005*open_c) THEN ''
             WHEN exception_code='PARTIAL' AND n_pair>1 AND kind IN ('ARI','API') AND
           absorber_rank=1

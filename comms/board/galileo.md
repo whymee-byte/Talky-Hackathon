@@ -8,3 +8,4 @@
 12:04 CLAIM T5 motor de excepciones e importes; revisar e implementar según POLICIES §2–3
 12:07 NOTE T5 medición ventana con mock golden: F1 FX 0,971; descuento 0,901; parcial 0,882; retención 0,582; resto ≥0,965 salvo UNIDENTIFIED sin mock. CLI genera 751.520 filas y valida formato, pero cubre 396.957/1.489.931 líneas; no declarar DONE hasta cerrar F1/coverage
 12:19 NOTE T5: corrige falsos RETURNED/PARTIAL en abonos neteados y prioridad T2 ante solapes obsoletos; 3 tests pasan. Pipeline público T7→T3→T5→submit: SCORE ventana 51,59→52,61; 396.957/396.957 ids de ventana cubiertos, validate.py --txns OK. Mock T5 sigue bajo objetivo en descuento 0,901, parcial 0,882 y retención 0,582; no DONE
+12:28 NOTE T5: regla general de retención por factura en pagos mixtos; 4 tests + compileall + validate.py por ids de ventana OK. Mock F1 retención 0,5816→0,5853 (+38 TP, +11 FP); score público 52,61→52,62. Descuento/parcial/retención siguen bajo 0,95; no DONE
