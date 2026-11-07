@@ -7,7 +7,9 @@ Rules (rule ids are stable, used in the audit trail):
 - T2.dd_batch      batch credit (IN, same account, batch_id in the bank text) → every receipt of the batch;
                    re-presented receipts (re_presentation=Y) carry no exception.
 - T2.dd_return     R-transaction (OUT, mandate in the text, batch when quoted) → item of the reversed receipt, RETURNED.
-- T2.run_transfer / T2.run_aggregated / T2.run_confirming   payment_runs/ (see runs.py)
+- T2.run_transfer / T2.run_aggregated / T2.run_confirming / T2.run_return   payment_runs/ (see runs.py)
+- T2.card / T2.card_chargeback / T2.cheque / T2.cheque_return             deposits.py
+- T2.supplier_dd   supplier direct debits without detail file (supplier_dd.py)
 """
 from __future__ import annotations
 
@@ -20,9 +22,9 @@ import time
 import duckdb
 
 from src.common import REPO, data_root, phase_dir, safe_stdout
-from src.sidefiles import deposits, runs
+from src.sidefiles import deposits, runs, supplier_dd
 
-STEPS = ["dd", "ret", "pr", "card", "chq"]
+STEPS = ["dd", "ret", "pr", "card", "chq", "sdd"]
 COLUMNS = "bank_txn_id, item_id, amount_cents, exception, rule, link_key, confidence, evidence"
 
 
@@ -194,8 +196,8 @@ def step_ret(con, dirs) -> str | None:
                        and d.collection_date <= rl.booking_date - to_days(rl.lag_min)
                        and d.collection_date >= rl.booking_date - to_days(rl.lag_max)
       qualify row_number() over (partition by rl.bank_txn_id order by list_contains(rl.batch_refs, d.batch_id) desc,
-                                 -- MD06 refunds: closest to the typical delay learned on TRAIN (~7 weeks); others: latest
-                                 case when rl.code = 'MD06' then abs((rl.booking_date - d.collection_date) - 49) else 0 end,
+                                 -- MD06 refunds: closest to the typical delay (median learned on TRAIN < 2024-07, no leakage: 46 d, n=1567); others: latest
+                                 case when rl.code = 'MD06' then abs((rl.booking_date - d.collection_date) - 46) else 0 end,
                                  d.collection_date desc, d.rid) = 1""")
     con.sql("""create or replace table ret_src as
       select d.rid, a.entity, d.mandate_id, d.debtor_iban, d.ref, d.amount_cents
@@ -212,13 +214,21 @@ def step_ret(con, dirs) -> str | None:
     return "links_ret"
 
 
-def build(phase: str, data: str | None, steps: list[str], subset: str | None = None) -> dict:
+def out_name(subset: str | None = None, tag: str | None = None) -> str:
+    """side_links[_<subset>][_<tag>].parquet — the tag lets parallel dev sessions keep separate outputs."""
+    return f"side_links{'_' + subset if subset else ''}{'_' + tag if tag else ''}.parquet"
+
+
+def build(phase: str, data: str | None, steps: list[str], subset: str | None = None, tag: str | None = None) -> dict:
     con = duckdb.connect()
     setup(con, phase, data, subset)
     dirs = detail_dirs(phase, data)
     tables = []
     for s in steps:
-        t = {"dd": step_dd, "ret": step_ret,
+        if s == "sdd":   # runs last: only lines no detail file explained
+            taken = " union ".join(f"select bank_txn_id from {t}" for t in tables) or "select null::varchar bank_txn_id where false"
+            con.sql(f"create or replace table side_taken as {taken}")
+        t = {"dd": step_dd, "ret": step_ret, "sdd": lambda c, d: supplier_dd.step_supplier_dd(c),
              "pr": lambda c, d: runs.step_pr(c, glob_csv(d, "payment_runs")),
              "card": lambda c, d: deposits.step_card(c, glob_csv(d, "card_settlements")),
              "chq": lambda c, d: deposits.step_cheque(c, glob_csv(d, "cheque_deposits"), resolve_receipts)}[s](con, dirs)
@@ -231,7 +241,7 @@ def build(phase: str, data: str | None, steps: list[str], subset: str | None = N
     # one row per (line, item): keep the most confident rule
     con.sql(f"""create or replace table side_links as select * from ({union})
                qualify row_number() over (partition by bank_txn_id, item_id order by confidence desc, rule) = 1""")
-    out = os.path.join(REPO, "work", phase, f"side_links{'_' + subset if subset else ''}.parquet").replace(os.sep, "/")
+    out = os.path.join(REPO, "work", phase, out_name(subset, tag)).replace(os.sep, "/")
     con.sql(f"copy side_links to '{out}' (format parquet)")
     return {r[0]: (r[1], r[2]) for r in con.sql("select rule, count(*), count(distinct bank_txn_id) from side_links group by 1 order by 1").fetchall()}
 
@@ -243,12 +253,13 @@ def main(argv=None) -> int:
     ap.add_argument("--data")
     ap.add_argument("--steps", default=",".join(STEPS))
     ap.add_argument("--subset", choices=sorted(SUBSETS), help="window only: dev subset (writes side_links_<subset>.parquet)")
+    ap.add_argument("--tag", help="dev only: writes side_links[_<subset>]_<tag>.parquet (parallel sessions)")
     a = ap.parse_args(argv)
     t0 = time.time()
-    r = build(a.phase, a.data, [s for s in a.steps.split(",") if s], a.subset)
+    r = build(a.phase, a.data, [s for s in a.steps.split(",") if s], a.subset, a.tag)
     for rule, (n, nl) in r.items():
         print(f"  {rule:22s} pairs={n:8d} lines={nl:7d}")
-    print(f"[{a.phase}{'/' + a.subset if a.subset else ''}] side_links -> work/{a.phase}/side_links{'_' + a.subset if a.subset else ''}.parquet ({time.time() - t0:.0f}s)", flush=True)
+    print(f"[{a.phase}{'/' + a.subset if a.subset else ''}] side_links -> work/{a.phase}/{out_name(a.subset, a.tag)} ({time.time() - t0:.0f}s)", flush=True)
     return 0
 
 

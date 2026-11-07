@@ -17,7 +17,7 @@ def step_card(con, src: str | None) -> str | None:
         return None
     con.sql(f"""create or replace table card as
       select row_number() over () cid, settlement_id, merchant_id, settlement_date::date settlement_date, account_id, currency,
-             order_number, {NORM.format(x='order_number')} ord_norm, {DIGITS.format(x='order_number')} ord_digits,
+             card, order_number, {NORM.format(x='order_number')} ord_norm, {DIGITS.format(x='order_number')} ord_digits,
              round(gross::double * 100)::bigint gross_cents, round(net::double * 100)::bigint net_cents
       from (select distinct * from {src})""")
     con.sql("""create or replace table card_line as
@@ -43,12 +43,35 @@ def step_card(con, src: str | None) -> str | None:
              join items i on i.side = 'AR' and i.kind = 'ARI' and (i.doc_norm = c.ord_norm or i.doc_digits = c.ord_digits))
       select cid, item_id, doc_exact, amt_ok from cand
       qualify row_number() over (partition by cid order by doc_exact desc, amt_ok desc, same_entity desc, issue_date desc, item_id) = 1""")
+    con.sql("""create or replace table card_item_all as
+      with cand as (
+             select c.cid, i.item_id, i.doc_norm = c.ord_norm doc_exact, (i.total_cents = c.gross_cents) amt_ok, i.issue_date
+             from card c join items i on i.side = 'AR' and i.kind = 'ARI' and i.doc_norm = c.ord_norm)
+      select cid, item_id from cand
+      qualify row_number() over (partition by cid order by amt_ok desc, issue_date desc, item_id) = 1""")
     con.sql("""create or replace table links_card as
       select x.bank_txn_id, r.item_id, c.gross_cents amount_cents, '' exception, 'T2.card' rule, c.settlement_id link_key,
              round(case when x.net_ok then 1.0 else 0.8 end * case when r.doc_exact and r.amt_ok then 1.0 when r.doc_exact then 0.9 else 0.8 end, 3) confidence,
              concat('settlement_id=', c.settlement_id, '; merchant=', c.merchant_id, '; net_ok=', x.net_ok, '; order=', c.order_number,
                     '; gross; doc_exact=', r.doc_exact, '; amt_ok=', r.amt_ok) evidence
       from card c join card_line x using (settlement_id) join card_item r using (cid)""")
+    # ---------------------------------------------------------------- chargebacks
+    # OUT line "CHARGEBACK <last4> MID <merchant>" / "CONTRACARGO TARJ <last4> COMERC <merchant> OP <order>" → the card
+    # order (same merchant, card ending, gross = amount, operated before), RETURNED, amount = original allocation (gross)
+    con.sql(f"""create or replace table links_card_cb as
+      with cb as (select bank_txn_id, booking_date, -amount_cents amt, text_norm,
+                         regexp_extract(text_norm, '(?:CHARGEBACK|CONTRACARGO TARJ) ([0-9]{{4}})', 1) last4
+                  from lines where direction = 'OUT' and regexp_matches(text_norm, 'CHARGEBACK|CONTRACARGO')),
+           m as (select cb.bank_txn_id, c.cid, contains(' ' || cb.text_norm || ' ', ' ' || c.ord_norm || ' ') ord_in_text
+                 from cb join card c on c.gross_cents = cb.amt and right(regexp_replace(c.card, '[^0-9]', '', 'g'), 4) = cb.last4
+                      and contains(' ' || cb.text_norm || ' ', ' ' || c.merchant_id || ' ') and c.settlement_date <= cb.booking_date
+                      and c.settlement_date >= cb.booking_date - 180
+                 qualify row_number() over (partition by cb.bank_txn_id order by ord_in_text desc, c.settlement_date desc, c.cid) = 1)
+      select m.bank_txn_id, r.item_id, c.gross_cents amount_cents, 'RETURNED' exception, 'T2.card_chargeback' rule,
+             c.settlement_id link_key, case when m.ord_in_text then 1.0 else 0.85 end confidence,
+             concat('chargeback card=', c.card, '; merchant=', c.merchant_id, '; order=', c.order_number, '; gross') evidence
+      from m join card c using (cid) join card_item_all r using (cid)""")
+    con.sql("insert into links_card select * from links_card_cb")
     return "links_card"
 
 
@@ -106,4 +129,21 @@ def step_cheque(con, src: str | None, resolve_receipts) -> str | None:
              concat('deposit_id=', c.deposit_id, '; total_ok=', x.total_ok, '; drawer=', c.drawer, '; stub=', c.ref,
                     '; party_ok=', r.party_ok, '; doc=', (r.doc_exact or r.doc_digits), '; amt=', r.amt_ok) evidence
       from chq c join chq_line x using (deposit_id) join chq_item r using (rid)""")
+    # ---------------------------------------------------------------- returned cheques
+    # OUT line "RETURNED ITEM CHK <n>" / "CHEQUE IMPAYE <n>" → that cheque (same account, amount, deposited before) → its
+    # item, RETURNED, amount = the cheque
+    con.sql("""create or replace table links_chq_ret as
+      with rl as (select bank_txn_id, account_id, booking_date, -amount_cents amt,
+                         regexp_extract(text_norm, '(?:RETURNED ITEM CHK|CHEQUE IMPAYE|CHEQUE DEVUELTO|CHQ IMPAYE) ([0-9]+)', 1) chk
+                  from lines where direction = 'OUT' and regexp_matches(text_norm, 'RETURNED ITEM CHK|CHEQUE IMPAYE|CHEQUE DEVUELTO|CHQ IMPAYE')),
+           m as (select rl.bank_txn_id, c.rid, c.amount_cents = rl.amt amt_ok
+                 from rl join chq c on c.account_id = rl.account_id
+                      and ltrim(c.cheque_number, '0') = ltrim(rl.chk, '0') and c.deposit_date <= rl.booking_date
+                      and c.deposit_date >= rl.booking_date - 90
+                 qualify row_number() over (partition by rl.bank_txn_id order by (c.amount_cents = rl.amt) desc, c.deposit_date desc) = 1)
+      select m.bank_txn_id, r.item_id, c.amount_cents, 'RETURNED' exception, 'T2.cheque_return' rule, c.deposit_id link_key,
+             case when m.amt_ok then 1.0 else 0.8 end confidence,
+             concat('returned cheque=', c.cheque_number, '; deposit=', c.deposit_id, '; amount_ok=', m.amt_ok) evidence
+      from m join chq c using (rid) join chq_item r using (rid)""")
+    con.sql("insert into links_chq select * from links_chq_ret")
     return "links_chq"
