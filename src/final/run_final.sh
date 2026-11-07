@@ -180,6 +180,7 @@ opt_stage fxlate T21_fxlate
 run_stage excfix T15_excfix
 [[ -n "${NO_T3G:-}${NO_OVERFIX:-}" ]] || run_stage tolmatch T3g_overfix --overfix
 run_stage lastexact T22_lastexact
+run_stage duecomb T23_duecomb
 run_stage latedisc T20_latedisc
 
 SHA=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo nogit)
