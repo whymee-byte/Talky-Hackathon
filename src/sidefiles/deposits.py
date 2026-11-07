@@ -40,7 +40,12 @@ def step_card(con, src: str | None) -> str | None:
                     (c.ord_digits is not null and i.doc_digits = c.ord_digits) doc_digits,
                     (i.total_cents = c.gross_cents) amt_ok, i.issue_date
              from card c join card_line x using (settlement_id) join acc a on a.account_id = c.account_id
-             join items i on i.side = 'AR' and i.kind = 'ARI' and (i.doc_norm = c.ord_norm or i.doc_digits = c.ord_digits))
+             -- (doc_norm = ord_norm OR doc_digits = ord_digits) as two hash joins: the OR join was a nested loop
+             join (select distinct cid, item_id from (
+                     select c.cid, i.item_id from card c join items i on i.doc_norm = c.ord_norm
+                     union all
+                     select c.cid, i.item_id from card c join items i on i.doc_digits = c.ord_digits)) k using (cid)
+             join items i on i.item_id = k.item_id and i.side = 'AR' and i.kind = 'ARI')
       select cid, item_id, doc_exact, amt_ok from cand
       qualify row_number() over (partition by cid order by doc_exact desc, amt_ok desc, same_entity desc, issue_date desc, item_id) = 1""")
     con.sql("""create or replace table card_item_all as
@@ -90,6 +95,18 @@ def step_cheque(con, src: str | None, resolve_receipts) -> str | None:
       select d.deposit_id, l.bank_txn_id, l.amount_cents = d.total total_ok
       from d join lr l on l.account_id = d.account_id and l.ref = d.deposit_id
       qualify row_number() over (partition by d.deposit_id order by (l.amount_cents = d.total) desc, abs(l.booking_date - d.dt)) = 1""")
+    # ---------------------------------------------------------------- returned cheques: which cheque
+    # OUT line "RETURNED ITEM CHK <n>" / "CHEQUE IMPAYE <n>" → that cheque (same account, deposited in the 90 days before).
+    # Picked before resolving items: the deposit may precede the phase (no deposit line here) and still needs its item.
+    con.sql("""create or replace table chq_ret_pick as
+      with rl as (select bank_txn_id, account_id, booking_date, -amount_cents amt,
+                         regexp_extract(text_norm, '(?:RETURNED ITEM CHK|CHEQUE IMPAYE|CHEQUE DEVUELTO|CHQ IMPAYE) ([0-9]+)', 1) chk
+                  from lines where direction = 'OUT' and regexp_matches(text_norm, 'RETURNED ITEM CHK|CHEQUE IMPAYE|CHEQUE DEVUELTO|CHQ IMPAYE'))
+      select rl.bank_txn_id, c.rid, c.amount_cents = rl.amt amt_ok
+      from rl join chq c on c.account_id = rl.account_id
+           and ltrim(c.cheque_number, '0') = ltrim(rl.chk, '0') and c.deposit_date <= rl.booking_date
+           and c.deposit_date >= rl.booking_date - 90
+      qualify row_number() over (partition by rl.bank_txn_id order by (c.amount_cents = rl.amt) desc, c.deposit_date desc) = 1""")
     # the drawer name gives the customer (exact normalised name / trade name); the stub gives the document
     con.sql(f"""create or replace table chq_src as
       with cn as (select distinct n, entity, customer_id from (
@@ -99,8 +116,9 @@ def step_cheque(con, src: str | None, resolve_receipts) -> str | None:
            acc as (select account_id, any_value(entity) entity from lines group by 1)
       -- one row per (cheque, homonymous customer): the amount / stub decides among homonyms
       select c.rid, a.entity, null mandate_id, null debtor_iban, c.ref, c.amount_cents, cn.customer_id party_hint, c.drawer_norm
-      from chq c join chq_line x using (deposit_id) join acc a on a.account_id = c.account_id
-      left join cn on cn.n = c.drawer_norm and cn.entity = a.entity""")
+      from chq c join acc a on a.account_id = c.account_id
+      left join cn on cn.n = c.drawer_norm and cn.entity = a.entity
+      where c.deposit_id in (select deposit_id from chq_line) or c.rid in (select rid from chq_ret_pick)""")
     # 1) with a known drawer: resolve among the customer's items; 2) else: by document reference within the entity
     # suffixes (5–10 digits) of AR document digits → hash-joinable "stub without prefix / leading zeros" lookup
     con.sql("""create or replace table sfx as
@@ -114,9 +132,14 @@ def step_cheque(con, src: str | None, resolve_receipts) -> str | None:
                     (i.doc_norm = r.ref_norm) doc_exact,
                     (r.ref_digits is not null and (i.doc_digits = r.ref_digits or (length(r.ref_digits) >= 5 and ends_with(i.doc_digits, r.ref_digits)))) doc_digits,
                     (i.total_cents = r.amount_cents or i.open_at_start_cents = r.amount_cents) amt_ok, i.issue_date
-             from r join items i on i.side = 'AR' and i.kind = 'ARI' and i.entity = r.entity
-                   and (i.party_id = r.party_hint or i.doc_norm = r.ref_norm
-                        or i.item_id in (select item_id from sfx where sfx.suffix = r.ref_digits)))
+             -- (party OR doc_norm OR stub suffix) as three hash joins: the OR join was a nested loop
+             from r join (select distinct rid, item_id from (
+                            select r.rid, i.item_id from r join items i on i.party_id = r.party_hint
+                            union all
+                            select r.rid, i.item_id from r join items i on i.doc_norm = r.ref_norm
+                            union all
+                            select r.rid, x.item_id from r join sfx x on x.suffix = r.ref_digits)) k using (rid)
+                    join items i on i.item_id = k.item_id and i.side = 'AR' and i.kind = 'ARI' and i.entity = r.entity)
       select rid, item_id, party_ok, doc_exact, doc_digits, amt_ok,
              count(*) over (partition by rid) n_cand
       from cand where (party_ok and (doc_exact or doc_digits or amt_ok)) or ((doc_exact or doc_digits) and amt_ok)
@@ -129,21 +152,11 @@ def step_cheque(con, src: str | None, resolve_receipts) -> str | None:
              concat('deposit_id=', c.deposit_id, '; total_ok=', x.total_ok, '; drawer=', c.drawer, '; stub=', c.ref,
                     '; party_ok=', r.party_ok, '; doc=', (r.doc_exact or r.doc_digits), '; amt=', r.amt_ok) evidence
       from chq c join chq_line x using (deposit_id) join chq_item r using (rid)""")
-    # ---------------------------------------------------------------- returned cheques
-    # OUT line "RETURNED ITEM CHK <n>" / "CHEQUE IMPAYE <n>" → that cheque (same account, amount, deposited before) → its
-    # item, RETURNED, amount = the cheque
+    # returned cheque → its item, RETURNED, amount = the cheque
     con.sql("""create or replace table links_chq_ret as
-      with rl as (select bank_txn_id, account_id, booking_date, -amount_cents amt,
-                         regexp_extract(text_norm, '(?:RETURNED ITEM CHK|CHEQUE IMPAYE|CHEQUE DEVUELTO|CHQ IMPAYE) ([0-9]+)', 1) chk
-                  from lines where direction = 'OUT' and regexp_matches(text_norm, 'RETURNED ITEM CHK|CHEQUE IMPAYE|CHEQUE DEVUELTO|CHQ IMPAYE')),
-           m as (select rl.bank_txn_id, c.rid, c.amount_cents = rl.amt amt_ok
-                 from rl join chq c on c.account_id = rl.account_id
-                      and ltrim(c.cheque_number, '0') = ltrim(rl.chk, '0') and c.deposit_date <= rl.booking_date
-                      and c.deposit_date >= rl.booking_date - 90
-                 qualify row_number() over (partition by rl.bank_txn_id order by (c.amount_cents = rl.amt) desc, c.deposit_date desc) = 1)
       select m.bank_txn_id, r.item_id, c.amount_cents, 'RETURNED' exception, 'T2.cheque_return' rule, c.deposit_id link_key,
              case when m.amt_ok then 1.0 else 0.8 end confidence,
              concat('returned cheque=', c.cheque_number, '; deposit=', c.deposit_id, '; amount_ok=', m.amt_ok) evidence
-      from m join chq c using (rid) join chq_item r using (rid)""")
+      from chq_ret_pick m join chq c using (rid) join chq_item r using (rid)""")
     con.sql("insert into links_chq select * from links_chq_ret")
     return "links_chq"
