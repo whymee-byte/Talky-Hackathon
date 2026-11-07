@@ -1,6 +1,6 @@
 """Empirical calibration of line_party.confidence (so that T3 can use a threshold ~ F1/2).
 
-fit():   on the TRAIN window, P(candidate is a golden party | rank, strength bucket, share bucket)
+ fit():   on pre-window TRAIN predictions, P(candidate is a golden party | rank, strength bucket, share bucket)
          -> work/party_model/calibration.parquet  (buckets with < MIN_N lines fall back to a coarser bucket)
 apply(): rewrites work/<phase>/line_party.parquet with confidence = calibrated probability.
 strength = combined evidence 1 - prod(1 - c); share = strength / sum(strength of the line's candidates).
@@ -21,12 +21,12 @@ def _load(con, path):
     con.execute(f"CREATE OR REPLACE TEMP TABLE lp AS SELECT {keep}, {share} AS share FROM '{path}'")
 
 
-def fit(path="work/window/line_party.parquet"):
+def fit(path="work/train/line_party.parquet"):
     con = connect()
     _load(con, path)
     con.execute(f"""COPY (
       WITH t AS (SELECT bank_txn_id, parties FROM 'work/train/party_truth.parquet'
-                 WHERE booking_date >= DATE '{WINDOW_START}'),
+                 WHERE booking_date < DATE '{WINDOW_START}'),
            p AS (SELECT rank, {BUCKETS}, list_contains(t.parties, lp.party_id) AS hit
                  FROM lp JOIN t USING (bank_txn_id)),
            fine AS (SELECT rank, sb, hb, count(*) AS n, avg(hit::int) AS p FROM p GROUP BY ALL),

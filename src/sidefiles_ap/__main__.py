@@ -351,7 +351,7 @@ def link_confirming(con) -> None:
              try_cast(regexp_extract(l.text_norm, r.run_id || ' ([0-9]+)', 1) as int) k
       from L l join (select distinct run_id, acct, d from U where run_type = 'confirming') r
            on l.account_id = r.acct and contains(l.txt_c, r.run_id) and l.direction = 'OUT'
-           and l.booking_date between r.d - {DAYS_BEFORE} and r.d + {CONF_DAYS}""")
+           and l.booking_date between r.d - {CONF_DAYS} and r.d + {CONF_DAYS}""")
     runs = con.sql("select run_id, acct from CFL group by 1, 2").fetchall()
     rows = []
     for run_id, acct in runs:
@@ -361,13 +361,18 @@ def link_confirming(con) -> None:
         pending = {e: (c, mx) for e, c, mx in units}
         for bt, bd, amt, k in charges:
             k = k or 1
-            cand = [(e, c) for e, (c, mx) in pending.items() if mx is None or mx <= bd + timedelta(days=3)]
             found = None
             if k == 1:
-                hits = [e for e, c in cand if c == amt]
-                if len(hits) == 1:
+                hits = [e for e, (c, mx) in pending.items() if c == amt]
+                if len(hits) > 1:   # varios con el mismo importe: el de vencimiento más cercano al cargo
+                    hits.sort(key=lambda e: abs((pending[e][1] or bd) - bd))
+                    hits = hits[:1]
+                if hits:
                     found = hits
-            elif k <= 6 and len(cand) <= 60:
+            elif k <= 6:
+                # vencidos (o sin vencimiento) hasta 3 días después del cargo; si quedan demasiados, los más cercanos
+                cand = sorted(((e, c) for e, (c, mx) in pending.items() if mx is None or mx <= bd + timedelta(days=3)),
+                              key=lambda t: abs((pending[t[0]][1] or bd) - bd))[:45]
                 hits = [combo for combo in itertools.combinations(cand, k) if sum(c for _, c in combo) == amt]
                 if len(hits) == 1:
                     found = [e for e, _ in hits[0]]

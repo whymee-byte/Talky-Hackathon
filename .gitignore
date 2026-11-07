@@ -13,3 +13,4 @@ work/
 /final/
 ._*
 logs/
+!src/final/
