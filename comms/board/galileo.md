@@ -5,3 +5,4 @@
 11:18 NOTE T1 auditor√≠a final: roundtrip Pydantic e IDs SHA-256 para 8716 filas; formatos no soportados conservan raw_record
 11:20 NOTE T1 cobertura por fuente: N43 4085, camt 2094, MT940 2537; suma y logs = 8716 sin p√©rdidas
 11:54 CLAIM T5 motor de excepciones e importes (src/exceptions/): pairs_raw ı7b  allocations ı8, mock desde golden mientras T3 no entregue 
+11:51 DONE T5 motor pairs_raw+T2+no-item -; ventana real SCORE 50.39 (Allocation F1 53.52; txn acc 59.28; exception macro-F1 29.20). F1: RETURNED 0.623; SHORT_BANK_CHARGES 0.495; SHORT_DISCOUNT 0.493; UNIDENTIFIED 0.451; PARTIAL 0.347; SHORT_WITHHOLDING 0.218; OVERPAYMENT 0.163; FX_DIFFERENCE 0.128; DUPLICATE_PAYMENT 0; SHORT_DISPUTE 0. Entrada T3 medida: 416903 pares, 0 open_before=0, 0 doc_hint informado, por tanto duplicate/dispute no evaluables en pipeline real. Smoke reglas vectorizadas, py_compile y validate correctos; pendiente mock golden de la otra sesion para aislar T5. 
