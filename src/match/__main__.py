@@ -118,7 +118,8 @@ def build(phase):
                r.icur <> lt.currency AS is_fx, coalesce(fl.u, 1.0) AS u_line
         FROM (SELECT DISTINCT bank_txn_id, icur FROM RC) r JOIN LT lt USING (bank_txn_id)
         ASOF LEFT JOIN FX fl ON fl.currency = lt.currency AND fl.d <= lt.booking_date
-        ASOF LEFT JOIN FX fi ON fi.currency = r.icur AND fi.d <= lt.booking_date""")
+        ASOF LEFT JOIN FX fi ON fi.currency = r.icur AND fi.d <= lt.booking_date
+        WHERE r.icur = lt.currency OR (fl.u IS NOT NULL AND fi.u IS NOT NULL)""")
     con.execute(f"""CREATE TABLE REFP AS
       WITH s AS (SELECT r.*, c.cash_i, c.is_fx, c.u_line, lt.booking_date, lt.entity,
                         sum(r.sgn * r.open_c) OVER (PARTITION BY r.bank_txn_id) AS sum_open,
