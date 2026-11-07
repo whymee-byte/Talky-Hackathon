@@ -128,8 +128,7 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
       (upper(line_currency)<>upper(item_cur)) AS is_fx,
       ((kind='ARI' AND direction='IN') OR (kind='API' AND direction='OUT') OR
        (kind IN ('ARC','APC') AND ((kind='ARC' AND direction='OUT') OR (kind='APC' AND direction='IN')))) AS normal_direction,
-      ((kind='ARI' AND direction='OUT') OR (kind='API' AND direction='IN') OR
-       (kind='APC' AND direction='OUT') OR (kind='ARC' AND direction='IN')) AS reverse_direction
+      ((kind='ARI' AND direction='OUT') OR (kind='API' AND direction='IN')) AS reverse_direction
       FROM G""")
     # Populate the policy decision from grouped pair features. Keep rules auditable at row granularity.
     con.execute("""CREATE TEMP TABLE R AS SELECT *,
@@ -168,7 +167,9 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
       row_number() OVER (PARTITION BY bank_txn_id ORDER BY absorber_candidate DESC, issue_date DESC NULLS LAST, item_id DESC) absorber_rank
       FROM R""")
     con.execute("""CREATE TEMP TABLE FINAL AS SELECT *,
-       CASE WHEN exception_code='PARTIAL' AND n_pair>1 AND kind IN ('ARI','API') AND
+       CASE WHEN kind IN ('ARC','APC') AND exception_code NOT IN ('DUPLICATE_PAYMENT','RETURNED')
+                  AND abs(applied_i-open_c)<=greatest(1,0.005*open_c) THEN ''
+            WHEN exception_code='PARTIAL' AND n_pair>1 AND kind IN ('ARI','API') AND
           absorber_rank=1
          THEN 'PARTIAL' WHEN exception_code='PARTIAL' AND n_pair>1 AND kind IN ('ARI','API') THEN ''
          ELSE exception_code END final_exception,

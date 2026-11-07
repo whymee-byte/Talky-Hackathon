@@ -24,6 +24,15 @@ def _csv(path: str) -> pl.DataFrame:
     return frame
 
 
+def _merge_priority(parts: list[pl.DataFrame]) -> pl.DataFrame:
+    """Merge decisions in priority order, keeping the first version of each pair."""
+    if not parts:
+        raise ValueError("at least one allocation frame is required")
+    return pl.concat(parts, how="vertical_relaxed").unique(
+        subset=["bank_txn_id", "item_id"], keep="first", maintain_order=True
+    )
+
+
 def build(phase: str, root: str | None = None) -> dict:
     w = os.path.join(REPO, "work", phase)
     required = ["pairs_raw.parquet", "lines.parquet", "items.parquet"]
@@ -38,10 +47,11 @@ def build(phase: str, root: str | None = None) -> dict:
     fx = _csv(os.path.join(data, "masters", "fx_rates.csv"))
     decided = decide(pairs, lines, items, customers, fx)
 
-    # Keep T2 batch rows, which T3 deliberately excludes from pairs_raw. Preserve T3's
-    # no-item/T7 rows from its allocation artifact, then replace its matched rows with T5.
+    # Keep T2 batch rows, which T3 deliberately excludes from pairs_raw. If stale
+    # artifacts overlap, T2's authoritative side link must precede T5 during deduplication.
+    # Preserve T3's no-item/T7 rows from its allocation artifact.
     old_alloc = os.path.join(w, "allocations.parquet")
-    parts = [decided]
+    parts = []
     if os.path.exists(os.path.join(w, "side_links.parquet")):
         side = _parquet(os.path.join(w, "side_links.parquet"))
         side = side.with_columns(
@@ -53,6 +63,7 @@ def build(phase: str, root: str | None = None) -> dict:
             pl.col("evidence").cast(pl.String),
         ).select(OUTPUT)
         parts.append(side)
+    parts.append(decided)
     if os.path.exists(old_alloc):
         nonitems = _parquet(old_alloc).filter(pl.col("item_id").is_null())
         if nonitems.height:
@@ -61,13 +72,11 @@ def build(phase: str, root: str | None = None) -> dict:
                 pl.col("bank_txn_id"), pl.col("item_id"), pl.col("amount_cents"), pl.col("category"),
                 pl.col("exception"), pl.col("rule"), pl.col("confidence"), pl.col("evidence"))
             parts.append(nonitems)
-    allocations = pl.concat(parts, how="vertical_relaxed").with_columns(
+    allocations = _merge_priority(parts).with_columns(
         pl.col("amount_cents").cast(pl.Int64, strict=False),
         pl.col("confidence").cast(pl.Float64, strict=False),
         pl.col("rule").cast(pl.String), pl.col("evidence").cast(pl.String),
     )
-    # T2 and T3 can overlap if a caller supplied stale artifacts: strongest side link wins.
-    allocations = allocations.unique(subset=["bank_txn_id", "item_id"], keep="first", maintain_order=True)
     if allocations.filter(pl.col("rule").is_null() | pl.col("confidence").is_null() | pl.col("evidence").is_null()).height:
         raise ValueError("audit rule/confidence/evidence must be populated on every allocation")
     if allocations.filter(pl.col("confidence").is_not_null() & ((pl.col("confidence") < 0) | (pl.col("confidence") > 1))).height:
