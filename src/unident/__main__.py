@@ -28,7 +28,7 @@ import time
 
 import duckdb
 
-from src.common import REPO
+from src.common import REPO, safe_stdout
 from src.party.common import WINDOW_START, src
 
 TOK_MIN_N = 50       # a word must appear on >= 50 TRAIN lines to decide
@@ -137,6 +137,7 @@ def build(phase: str, src_name: str, dst_name: str) -> None:
 
 
 def main() -> None:
+    safe_stdout()
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", required=True)
     ap.add_argument("--src", default="allocations.parquet")
