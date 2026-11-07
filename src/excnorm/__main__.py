@@ -17,9 +17,9 @@ import os
 import duckdb
 
 from src.common import REPO
+from src.common.profile import sql_wht_match, sql_wht_parties, withholding
 
-RATES = (0.0125, 0.015, 0.10)
-WHT_ENTITIES = ("MX01", "BR01", "MA01")
+# SHORT_WITHHOLDING entities and rates: learned from TRAIN + POLICIES fallback (src.common.profile), not hard-coded
 
 
 def build(phase: str) -> None:
@@ -27,16 +27,18 @@ def build(phase: str) -> None:
     p = f"{w}/allocations.parquet"
     con = duckdb.connect()
     con.execute(f"CREATE TABLE A AS SELECT * FROM '{p}'")
-    wht = " OR ".join(f"abs(cash - round(total_cents * (1 - {r}))) <= 1" for r in RATES)
+    prof = withholding(phase)
+    WHTP = sql_wht_parties(con, prof)      # customers that may withhold (country of the customer, POLICIES §3)
+    wht = sql_wht_match(prof["rates"], "cash", "total_cents")
     con.execute(f"""CREATE TABLE S AS
-      SELECT a.bank_txn_id, a.item_id, abs(l.amount_cents) cash, i.total_cents, i.open_at_start_cents open_c, i.entity,
+      SELECT a.bank_txn_id, a.item_id, abs(l.amount_cents) cash, i.total_cents, i.open_at_start_cents open_c, i.party_id,
              i.discount_pct, i.discount_days, i.issue_date, l.booking_date
       FROM A a JOIN '{w}/lines.parquet' l USING (bank_txn_id) JOIN '{w}/items.parquet' i USING (item_id)
       WHERE a.exception = 'PARTIAL' AND i.kind = 'ARI' AND i.currency = l.currency
         AND a.bank_txn_id IN (SELECT bank_txn_id FROM A GROUP BY 1 HAVING count(item_id) = 1)""")
     con.execute(f"""CREATE TABLE FIX AS
       SELECT bank_txn_id, item_id, open_c,
-             CASE WHEN entity IN {WHT_ENTITIES} AND ({wht}) THEN 'SHORT_WITHHOLDING'
+             CASE WHEN party_id IN {WHTP} AND {wht} THEN 'SHORT_WITHHOLDING'
                   WHEN discount_pct IS NOT NULL AND booking_date <= issue_date + discount_days + 3
                        AND abs(cash - round(total_cents * (1 - discount_pct / 100))) <= 1 THEN 'SHORT_DISCOUNT' END exc
       FROM S""")
@@ -50,12 +52,12 @@ def build(phase: str) -> None:
         con.execute(f"""CREATE TABLE ADD AS
           WITH n AS (SELECT l.bank_txn_id, abs(l.amount_cents) cash, l.currency, l.booking_date, p.party_id
                      FROM '{w}/lines.parquet' l JOIN '{lp}' p USING (bank_txn_id)
-                     WHERE l.direction = 'IN' AND p.confidence >= 0.5 AND l.entity IN {WHT_ENTITIES}
+                     WHERE l.direction = 'IN' AND p.confidence >= 0.5 AND p.party_id IN {WHTP}
                        AND l.bank_txn_id IN (SELECT bank_txn_id FROM A GROUP BY 1 HAVING count(item_id) = 0)),
                c AS (SELECT n.bank_txn_id, i.item_id, i.open_at_start_cents open_c, n.cash, i.total_cents
                      FROM n JOIN '{w}/items.parquet' i ON i.party_id = n.party_id AND i.currency = n.currency AND i.kind = 'ARI'
                           AND i.open_at_start_cents = i.total_cents AND i.issue_date <= n.booking_date
-                     WHERE i.item_id NOT IN (SELECT item_id FROM A WHERE item_id IS NOT NULL) AND ({wht}))
+                     WHERE i.item_id NOT IN (SELECT item_id FROM A WHERE item_id IS NOT NULL) AND {wht})
           SELECT * FROM c QUALIFY count(*) OVER (PARTITION BY bank_txn_id) = 1 AND count(*) OVER (PARTITION BY item_id) = 1""")
         con.execute("DELETE FROM A WHERE item_id IS NULL AND bank_txn_id IN (SELECT bank_txn_id FROM ADD)")
         con.execute("""INSERT INTO A BY NAME SELECT bank_txn_id, item_id, open_c amount_cents, NULL::VARCHAR category,

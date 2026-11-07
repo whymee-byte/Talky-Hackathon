@@ -73,13 +73,20 @@ def build(model, con=None, phases_for_notices=("train",)):
         FROM {master('suppliers')}""")
     con.execute(f"COPY (SELECT party_id, entity, kind, parent_party_id, group_id, name_norm FROM parties) TO '{d}/parties.parquet'")
 
-    # every name form of a party: current, trade, and the names printed on its documents (catches renames)
-    con.execute(f"""CREATE OR REPLACE TEMP VIEW names AS
+    # every name form of a party: current, trade, and the names printed on its documents (catches renames). The
+    # pre_window model only sees TRAIN; the full model also reads the documents of the later phases present on disk
+    # (LIVE/FINAL invoices of customers created or renamed after TRAIN), never their bank lines or any golden.
+    doc_phases = ["train"] if model == "pre_window" else [p for p in ("train", "live", "final") if os.path.isdir(f"{RAW}/{p}")]
+    printed = " ".join(
+        f"""UNION SELECT customer_id, entity, norm(customer_name), 'printed_name' FROM {src(p, 'ar_invoices')}
+            UNION SELECT supplier_id, entity, norm(supplier_name), 'printed_name' FROM {src(p, 'ap_invoices')}
+            UNION SELECT party_id, entity, norm(party_name), 'printed_name' FROM {src(p, 'credit_notes')}"""
+        for p in doc_phases if os.path.exists(f"{RAW}/{p}/ar_invoices.csv.gz"))
+    # materialised once (a view re-read every csv.gz for each key length and ran out of memory with LIVE names)
+    con.execute(f"""CREATE OR REPLACE TEMP TABLE names AS
         SELECT party_id, entity, name_norm AS nm, 'master_name' AS source FROM parties
         UNION SELECT party_id, entity, trade_norm, 'trade_name' FROM parties WHERE trade_norm IS NOT NULL
-        UNION SELECT customer_id, entity, norm(customer_name), 'printed_name' FROM {src('train','ar_invoices')}
-        UNION SELECT supplier_id, entity, norm(supplier_name), 'printed_name' FROM {src('train','ap_invoices')}
-        UNION SELECT party_id, entity, norm(party_name), 'printed_name' FROM {src('train','credit_notes')}""")
+        {printed}""")
     parts = []
     for L in KEY_LENGTHS:
         parts.append(f"SELECT entity, {L} AS L, left(nm, {L}) AS key, party_id, source FROM names WHERE length(nm) >= {L}")

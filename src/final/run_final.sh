@@ -157,6 +157,7 @@ run_stage pdffacts T8_pdf_facts
 run_stage docrules T8b_pdf_clauses
 run_stage excnorm T5c_exception_norm
 run_stage multiref T5d_multiref
+run_stage refnoise T5e_refnoise
 run_stage unident T7b_unidentified
 
 SHA=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo nogit)

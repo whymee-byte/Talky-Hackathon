@@ -34,8 +34,10 @@ from src.common import REPO, data_root, phase_dir, safe_stdout
 
 STEPS = ["runs", "ret", "card", "chq", "conf"]
 COLUMNS = "bank_txn_id, item_id, amount_cents, exception, rule, link_key, confidence, evidence"
-# payment factory (POLICIES §5.2): la matriz paga facturas de estas filiales desde sus cuentas
-FACTORY = {"ES00": ("ES01", "ES02", "PT01")}
+# payment factory (POLICIES §5.2): una sociedad paga facturas de otra desde sus cuentas. Sin lista de sociedades a
+# fuego: el fichero de pagos lleva la sociedad de las partidas (nombre del fichero) y la cuenta deudora puede ser de
+# otra; un documento de otra sociedad sólo se acepta si el beneficiario es un proveedor registrado de la sociedad de
+# la partida (IBAN o nombre en suppliers.csv), que es la evidencia que define a la fábrica de pagos.
 DAYS_BEFORE = 3     # el cargo puede contabilizarse unos días antes de la fecha de ejecución
 DAYS_AFTER = 10     # … o varios días después
 DAYS_AMT = 5        # sin id en el texto: cuenta + importe exacto a ≤ 5 días
@@ -107,7 +109,7 @@ def build(phase: str, data: str | None = None, steps: list[str] | None = None, o
     # ================================================================== payment runs
     pr_csv = glob_csv(dirs, "payment_runs", phase, con)
     if pr_csv and any(s in steps for s in ("runs", "ret", "conf")):
-        fact = " or ".join(f"(p.fent = '{k}' and i.entity in ({', '.join(repr(x) for x in v)}))" for k, v in FACTORY.items())
+        fact = "s.supplier_id is not null or si.supplier_id is not null"
         con.sql(f"""create table PR as
           select run_id, run_type, execution_date::date d, debtor_account_id acct, end_to_end_id e2e, {compact('end_to_end_id')} e2e_c,
                  {compact('beneficiary')} ben_c, nullif(upper(replace(beneficiary_iban, ' ', '')), '') iban, currency,
@@ -126,7 +128,7 @@ def build(phase: str, data: str | None = None, steps: list[str] | None = None, o
             join I i on i.doc_c = p.doc_c and i.currency = p.currency and i.kind = case when p.doc_cents < 0 then 'APC' else 'API' end
             left join SUP s on s.name_c = p.ben_c and s.entity = i.entity
             left join SUP si on si.iban = p.iban and si.entity = i.entity
-            where i.entity = p.fent or {fact}""")
+            where i.entity = p.fent or ({fact})""")
         # proveedor del e2e: el que resuelven nombre/IBAN o, si no (factor, renombrado), el único candidato de sus filas
         con.sql("""create table E2P as
             select run_id, e2e, party_id, ient from (

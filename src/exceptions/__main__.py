@@ -45,7 +45,10 @@ def build(phase: str, root: str | None = None) -> dict:
     data = data_root(root)
     customers = _csv(os.path.join(data, "masters", "customers.csv"))
     fx = _csv(os.path.join(data, "masters", "fx_rates.csv"))
-    decided = decide(pairs, lines, items, customers, fx)
+    from src.common.profile import withholding
+    wht = withholding(phase, root)
+    print(f"withholding profile ({wht['model']}): countries {wht['countries']} entities {wht['entities']} rates {wht['rates']}")
+    decided = decide(pairs, lines, items, customers, fx, wht)
 
     # Keep T2 batch rows, which T3 deliberately excludes from pairs_raw. If stale
     # artifacts overlap, T2's authoritative side link must precede T5 during deduplication.

@@ -20,6 +20,7 @@ import time
 import duckdb
 
 from src.common import REPO, data_root, safe_stdout
+from src.common.profile import withholding
 
 PARTY_MIN = 0.2
 
@@ -118,7 +119,10 @@ def build(phase: str) -> None:
     fxp = os.path.join(data_root(), "masters", "fx_rates.csv").replace(os.sep, "/")
     con.execute(f"""CREATE TABLE FXR AS SELECT date::DATE d, currency, units_per_eur::DOUBLE u
                    FROM read_csv('{fxp}', all_varchar=true)""")
-    con.execute("""CREATE TABLE BC AS
+    # the shortfall is not a withholding rate of the invoice total (rates learned from TRAIN + POLICIES fallback)
+    not_wht = "NOT (" + " OR ".join(f"abs((i.open_c - l.cash) - round(i.total_cents * {r})) <= 1"
+                                    for r in withholding(phase)["rates"]) + ")"
+    con.execute(f"""CREATE TABLE BC AS
       WITH l AS (SELECT l.*, coalesce(f.u, 1.0) u FROM LT l ASOF LEFT JOIN FXR f ON f.currency = l.currency AND f.d <= l.booking_date
                  WHERE l.bank_txn_id NOT IN (SELECT bank_txn_id FROM OUTR)),
            c AS (SELECT l.bank_txn_id, i.item_id, i.open_c, p.confidence pconf
@@ -128,10 +132,8 @@ def build(phase: str) -> None:
                    AND regexp_matches(l.text_norm, '\\b(CHGS|SHA|BEN|OUR|GASTOS|DIV|WIRE|TT IN|SWIFT|FEES?|CHARGES)\\b')
                    AND (i.open_c - l.cash) % 100 = 0
                    AND NOT (i.discount_pct IS NOT NULL AND abs(i.open_c - l.cash - round(i.total_cents * i.discount_pct / 100)) <= 1)
-                   AND NOT list_has_any([abs(i.open_c - l.cash - round(i.total_cents * 0.0125)) <= 1,
-                                         abs(i.open_c - l.cash - round(i.total_cents * 0.015)) <= 1,
-                                         abs(i.open_c - l.cash - round(i.total_cents * 0.10)) <= 1], [true])
-                   AND i.open_c - l.cash > 1 AND i.open_c - l.cash <= least(6000 * CASE WHEN l.currency = 'EUR' THEN 1 ELSE l.u END, 0.02 * i.open_c))
+                   AND {not_wht}
+                   AND i.open_c - l.cash > 1 AND i.open_c - l.cash <= least(6000 * l.u, 0.02 * i.open_c))
       SELECT * FROM c QUALIFY count(*) OVER (PARTITION BY bank_txn_id) = 1 AND count(*) OVER (PARTITION BY item_id) = 1""")
     con.execute("""INSERT INTO OUTR SELECT bank_txn_id, item_id, open_c, 'SHORT_BANK_CHARGES', 'T3f.bank_charges.unique', 'party+amount',
                           round(0.9 * pconf, 3), 'single open invoice of the party, cash short by <= 60 EUR and <= 2 %'

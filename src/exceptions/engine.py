@@ -8,6 +8,9 @@ import polars as pl
 
 
 OUTPUT = ["bank_txn_id", "item_id", "amount_cents", "category", "exception", "rule", "confidence", "evidence"]
+# SHORT_WITHHOLDING default profile = POLICIES.md §3 (countries MX/BR/MA; 1.25 %, 1.5 %, 10 %). The runner passes the
+# learned profile (src.common.profile.withholding): TRAIN history united with the policy, never entity ids in code.
+DEFAULT_WHT = {"countries": ["BR", "MA", "MX"], "entities": [], "rates": [0.0125, 0.015, 0.10]}
 
 
 def _frame(value: Any) -> pl.DataFrame:
@@ -22,13 +25,20 @@ def _frame(value: Any) -> pl.DataFrame:
     return pl.DataFrame(value)
 
 
-def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
+def decide(pairs_raw, lines, items, customers, fx, wht: dict | None = None) -> pl.DataFrame:
     """Return one final §8 decision per input pair.
 
     Inputs are contract DataFrames. Extra T3/T6 evidence (``doc_hint``) is preserved and
     interpreted only when it carries an explicit ``DISPUTE:`` reason. All bulk logic is SQL.
-    The function has no filesystem or global-state effects.
+    The function has no filesystem or global-state effects. ``wht`` = withholding profile
+    ({countries, entities, rates}); default = the written policy.
     """
+    from src.common.profile import sql_in, sql_wht_min_diff
+    wht = wht or DEFAULT_WHT
+    # customer country decides (POLICIES §3); the line entity's country only when the customer is not in the masters
+    wht_ok = (f"(country IN {sql_in(wht['countries'])} OR (coalesce(country, '') = '' AND entity IN {sql_in(wht.get('entities', []))}))")
+    wht_line = sql_wht_min_diff(wht["rates"], "abs(line_cash_i)", "invoice_total")
+    wht_item = sql_wht_min_diff([1 - r for r in wht["rates"]], "(abs(signed_open_sum)-abs(line_cash_i))", "total_cents")
     frames = {"p": _frame(pairs_raw), "l": _frame(lines), "i": _frame(items),
               "cu": _frame(customers), "fx0": _frame(fx)}
     con = duckdb.connect(":memory:")
@@ -109,7 +119,7 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
        regexp_matches(upper(coalesce(text_norm,'')), '\\bCHGS\\b|GASTOS (SHA|BEN)|\\b(SHA|BEN)\\b') OR
        coalesce(bank_code,'') LIKE '%XBCT' OR (lower(statement_format)='n43' AND bank_code='13') AS non_sepa
        FROM B""")
-    con.execute("""CREATE TEMP TABLE D AS SELECT *,
+    con.execute(f"""CREATE TEMP TABLE D AS SELECT *,
       line_cash_i AS cash_total,
       abs(signed_open_sum) AS abs_open_sum,
       abs(line_cash_i-abs(signed_open_sum)) <= greatest(currency_pairs,1) AS exact_same,
@@ -119,15 +129,8 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
       (kind='ARI' AND discount_pct IS NOT NULL AND discount_days IS NOT NULL AND
        booking_date <= issue_date + CAST(discount_days AS INTEGER) + 3 AND
        abs(abs(line_cash_i)-discount_expected) <= greatest(currency_pairs,1)) AS discount_ok,
-      (country IN ('MX','BR','MA') AND kind='ARI' AND
-       least(abs(abs(line_cash_i)-round(invoice_total*(1-0.0125))),
-             abs(abs(line_cash_i)-round(invoice_total*(1-0.015))),
-             abs(abs(line_cash_i)-round(invoice_total*(1-0.10)))) <= greatest(currency_pairs,1)) AS wht_candidate,
-      (country IN ('MX','BR','MA') AND kind='ARI' AND n_pair>1 AND
-       least(abs((abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.0125)),
-             abs((abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.015)),
-             abs((abs(signed_open_sum)-abs(line_cash_i))-round(total_cents*0.10)))
-         <= greatest(currency_pairs,1)) AS wht_item_candidate,
+      ({wht_ok} AND kind='ARI' AND {wht_line} <= greatest(currency_pairs,1)) AS wht_candidate,
+      ({wht_ok} AND kind='ARI' AND n_pair>1 AND {wht_item} <= greatest(currency_pairs,1)) AS wht_item_candidate,
       (kind='ARI' AND non_sepa AND open_c>0 AND diff>0 AND diff <= 0.02*open_c AND
        diff / NULLIF(item_units_per_eur,0) <= 6000) AS bank_charge_ok,
       (upper(line_currency)<>upper(item_cur)) AS is_fx,
@@ -136,14 +139,14 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
       ((kind='ARI' AND direction='OUT') OR (kind='API' AND direction='IN')) AS reverse_direction
       FROM G""")
     # Populate the policy decision from grouped pair features. Keep rules auditable at row granularity.
-    con.execute("""CREATE TEMP TABLE R AS SELECT *,
+    con.execute(f"""CREATE TEMP TABLE R AS SELECT *,
        CASE
        WHEN reverse_direction OR (coalesce(is_return_hint, false) AND open_before_cents<=0) THEN 'RETURNED'
        -- A returned collection re-presented against a reopened balance is a normal payment.
        WHEN open_before_cents<=0 AND normal_direction THEN 'DUPLICATE_PAYMENT'
        WHEN is_fx AND kind IN ('ARI','API') AND fx_band THEN 'FX_DIFFERENCE'
        WHEN NOT is_fx AND kind='ARI' AND discount_ok THEN 'SHORT_DISCOUNT'
-       WHEN NOT is_fx AND country IN ('MX','BR','MA') AND kind IN ('ARI','API') AND
+       WHEN NOT is_fx AND {wht_ok} AND kind IN ('ARI','API') AND
             (wht_candidate OR (wht_item_candidate AND wht_item_candidates=1)) THEN 'SHORT_WITHHOLDING'
        WHEN NOT is_fx AND n_pair=1 AND bank_charge_ok THEN 'SHORT_BANK_CHARGES'
        WHEN NOT is_fx AND n_pair=1 AND kind='ARI' AND normal_direction AND applied_i > open_c THEN 'OVERPAYMENT'

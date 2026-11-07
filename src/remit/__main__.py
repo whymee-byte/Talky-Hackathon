@@ -23,6 +23,7 @@ import time
 import duckdb
 
 from src.common import REPO, phase_dir, safe_stdout
+from src.common.profile import sql_wht_parties, withholding
 from src.remit import parse
 
 SOURCES = {"sample": ["sample"], "window": ["train"], "train": ["train"], "live": ["train", "live"],
@@ -30,8 +31,7 @@ SOURCES = {"sample": ["sample"], "window": ["train"], "train": ["train"], "live"
 DATE_LO, DATE_HI = -7, 12          # booking_date - payment_date, days
 DISC_WORDS = "DISCOUNT|SKONTO|DESCUENTO|DTO|PRONTO|ESCOMPTE|SCONTO|DESCONTO|RABAT"
 WHT_WORDS = r"WITHHOLD|RETENC|RETENU|RITENUTA|RETEN|WHT|ISR|IRRF|QUELLEN|\bRET\b"
-WHT_RATES = (0.0125, 0.015, 0.10)
-WHT_ENTITIES = ("MX01", "BR01", "MA01")
+# SHORT_WITHHOLDING entities and rates: learned from TRAIN + POLICIES fallback (src.common.profile), not hard-coded
 
 
 def build(phase: str) -> None:
@@ -138,7 +138,9 @@ def build(phase: str) -> None:
                    QUALIFY row_number() OVER (PARTITION BY bank_txn_id, item_id ORDER BY line_no) = 1""")
 
     # ---------------------------------------------------------------- 4. amount + exception
-    wht = " OR ".join(f"abs(short - round(total_cents * {r})) <= 1" for r in WHT_RATES)
+    prof = withholding(phase)
+    WHTP = sql_wht_parties(con, prof)      # customers that may withhold (country of the customer, POLICIES §3)
+    wht = "(" + " OR ".join(f"abs(short - round(total_cents * {r})) <= 1" for r in prof["rates"]) + ")"
     con.execute(f"""CREATE TABLE OUTR AS
       WITH x0 AS (
         SELECT m.*, rl.ded_c, rl.paid_c, rl.reason, l.booking_date, l.currency AS lcur,
@@ -149,7 +151,7 @@ def build(phase: str) -> None:
           CASE WHEN kind = 'ARC' THEN 'cn'
                WHEN open_c <= 0 THEN 'dup'
                WHEN short <= greatest(1, 0.005 * open_c) AND ded_c >= 0 THEN 'full'
-               WHEN regexp_matches(reason, '{WHT_WORDS}') OR (reason = '' AND entity IN {WHT_ENTITIES} AND ({wht})) THEN 'wht'
+               WHEN regexp_matches(reason, '{WHT_WORDS}') OR (reason = '' AND party_id IN {WHTP} AND {wht}) THEN 'wht'
                WHEN regexp_matches(reason, '{DISC_WORDS}')
                     OR (reason = '' AND discount_pct IS NOT NULL AND abs(short - round(total_cents * discount_pct / 100)) <= 1)
                     THEN CASE WHEN in_terms THEN 'disc' ELSE 'disc_late' END
@@ -170,7 +172,8 @@ def build(phase: str) -> None:
                   ELSE '' END AS exception,
              'T6.remit.' || how AS rule, file AS link_key,
              CASE WHEN kr >= 3 AND amt_ok = 1 THEN 0.98 WHEN amt_ok = 1 THEN 0.9 ELSE 0.7 END AS confidence,
-             'advice=' || file || '; key_rank=' || kr || '; amount_ok=' || amt_ok || '; short=' || short AS evidence
+             'advice=' || coalesce(file, '?') || '; key_rank=' || coalesce(kr::varchar, '?') || '; amount_ok=' || coalesce(amt_ok::varchar, '?')
+                 || '; short=' || coalesce(short::varchar, '?') AS evidence
       FROM x""")
     con.execute(f"COPY (SELECT * FROM OUTR WHERE amount_cents > 0) TO '{w}/remit_links.parquet' (FORMAT parquet)")
     if not os.environ.get("REMIT_NO_MERGE"):

@@ -16,6 +16,7 @@ import time
 
 from src.match import combo
 from src.common import data_root, safe_stdout
+from src.common.profile import sql_wht_match, sql_wht_parties, withholding
 from src.party.common import connect
 
 MONTHS = {1: "ENERO JANUARY JANVIER JANUAR GENNAIO JANEIRO STYCZEN", 2: "FEBRERO FEBRUARY FEVRIER FEBRUAR FEBBRAIO FEVEREIRO LUTY",
@@ -32,10 +33,9 @@ COMB_MAX_ITEMS = 40    # most recent open items of the party considered for comb
 PARTY_MIN = 0.30          # T4 confidence to use a candidate party for amount matching (~F1/2 after calibration)
 REF_CONF = {"alnum": 0.95, "po": 0.85, "dig": 0.90, "suf": 0.80}
 FX_TOL = 0.03             # POLICIES: bank FX spread always well within 3 %
-WHT_RATES = (0.0125, 0.015, 0.10)
 BANKCHG_EUR = 6000        # SHORT_BANK_CHARGES: shortfall <= 60 EUR equivalent ...
 BANKCHG_PCT = 0.02        # ... and <= 2 % of the item
-WHT_ENTITIES = ("MX01", "BR01", "MA01")
+# SHORT_WITHHOLDING entities and rates: learned from TRAIN + POLICIES fallback (src.common.profile), not hard-coded
 
 
 def tol(x):
@@ -49,6 +49,9 @@ def build(phase):
     con = connect("5GB")
     model = "pre_window" if phase == "window" else "full"
     masters = os.path.join(data_root(), "masters").replace(os.sep, "/")
+    wht = withholding(phase)
+    wht_parties = sql_wht_parties(con, wht)
+    print(f"withholding profile ({wht['model']}): countries {wht['countries']} rates {wht['rates']}")
     con.execute(f"CREATE TABLE L AS SELECT * FROM '{w}/lines.parquet'")
     con.execute(f"CREATE TABLE I AS SELECT * FROM '{w}/items.parquet'")
     con.execute(f"""CREATE TABLE ent_ok AS SELECT line_entity, party_entity FROM 'work/party_model/{model}/entity_pairs.parquet'
@@ -131,9 +134,7 @@ def build(phase):
           -- one invoice, less cash: discount within terms / withholding / partial
           n_ref = 1 AND discount_pct IS NOT NULL AND booking_date <= issue_date + discount_days + 3
             AND abs(cash_i - round(total_cents * (1 - discount_pct / 100))) <= 1 AS disc,
-          n_ref = 1 AND entity IN {WHT_ENTITIES} AND list_has_any(
-            [abs(cash_i - round(total_cents * (1 - {WHT_RATES[0]}))) <= 1, abs(cash_i - round(total_cents * (1 - {WHT_RATES[1]}))) <= 1,
-             abs(cash_i - round(total_cents * (1 - {WHT_RATES[2]}))) <= 1], [true]) AS wht,
+          n_ref = 1 AND party_id IN {wht_parties} AND {sql_wht_match(wht['rates'], 'cash_i', 'total_cents')} AS wht,
           n_ref = 1 AND kind IN ('ARI','API') AND cash_i > open_c + {tol('open_c')} AND cash_i <= open_c * (1 + {OVERPAY_MAX}) AS over,
           n_ref = 1 AND kind IN ('ARI','API') AND NOT is_fx AND cash_i < open_c - {tol('open_c')}
             AND open_c - cash_i <= least({BANKCHG_EUR} * u_line, {BANKCHG_PCT} * open_c) AS bankchg
