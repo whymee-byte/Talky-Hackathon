@@ -13,7 +13,11 @@ Data at 18:00 Madrid; target upload before 18:30; submissions close 19:30.
 
    - overlays `masters_final/*.csv` onto `data/masters/` (original kept in `data/masters_pre_final/`) and relearns T4;
    - writes `out/final_<ts>_<sha>.csv.gz` and validates it (`valid: N/N txns covered, 0 missing`).
-   - Rehearsal (LIVE copied as FINAL, 2026-11-07 14:15): every step ran end to end in ≈ 2 min.
+   - Rehearsals (LIVE copied as FINAL, 14:15 and 14:45): every step ran end to end, valid file, ≈ 3 min.
+   - `src/final/run_final.sh final` runs the same modules in the same order (masters_final through an HK_DATA root
+     instead of in place) plus validation, coverage and a report: use it as a cross-check only, never upload both.
+   - **Nobody else runs the pipeline in this checkout between 18:00 and the upload**: modules rewrite
+     `work/final/*.parquet` in place and parallel runs corrupt each other.
 3. Sanity: rows ≤ 3 M, file ≤ 60 MB uncompressed, 0 missing lines, share of `UNIDENTIFIED` and of lines with items
    similar to LIVE (`python -m src.diag` or a duckdb count on `work/final/allocations.parquet`).
 4. **Ask the FINAL owner (javier) for the OK**, add a `PROPUESTO` row to `SUBMISSIONS.md` with the window and LIVE
