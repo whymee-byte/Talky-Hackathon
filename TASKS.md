@@ -1,4 +1,4 @@
-﻿# Tareas
+# Tareas
 
 Ordenadas por **puntos esperados** (estimación a partir de `docs/SCORING.md`; T1 es requisito de casi todo y va
 justo después de T0). Cada tarea vive en **su carpeta** `src/<módulo>/`, lee/escribe los ficheros de
