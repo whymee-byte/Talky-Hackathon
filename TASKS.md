@@ -122,7 +122,7 @@ envíos **19:30** · entrega de proyecto **19:45**. Lo que esté en `main` y ver
   patrones LIVE sin categoría = 0; nº de llamadas LLM ≤ nº de patrones nuevos.
 
 ### T8 · Hechos de los PDFs
-- **Dueño:**
+- **Dueño:** ouyang
 - **Salida:** `work/<fase>/doc_facts.parquet` (§7).
 - **Hecho cuando:** extrae plazos, retención, anticipo a deducir, "anula y sustituye", mes de servicio, rappel
   compensado/pagado, abono reembolsado/compensado, factoring, nuevo IBAN (ES/FR/DE/EN…); regex primero, LLM sólo por
