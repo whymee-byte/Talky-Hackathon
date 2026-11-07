@@ -5,3 +5,5 @@
 11:18 NOTE T1 auditoría final: roundtrip Pydantic e IDs SHA-256 para 8716 filas; formatos no soportados conservan raw_record
 11:20 NOTE T1 cobertura por fuente: N43 4085, camt 2094, MT940 2537; suma y logs = 8716 sin pérdidas
 11:59 NOTE T5 §2: importes PARTIAL/SHORT_DISPUTE toman cash_cents por partida; ventana SCORE 50.39→50.55, allocation F1 53.52→54.02, txn accuracy 59.28→59.01; validación OK
+12:04 CLAIM T5 motor de excepciones e importes; revisar e implementar según POLICIES §2–3
+12:07 NOTE T5 medición ventana con mock golden: F1 FX 0,971; descuento 0,901; parcial 0,882; retención 0,582; resto ≥0,965 salvo UNIDENTIFIED sin mock. CLI genera 751.520 filas y valida formato, pero cubre 396.957/1.489.931 líneas; no declarar DONE hasta cerrar F1/coverage

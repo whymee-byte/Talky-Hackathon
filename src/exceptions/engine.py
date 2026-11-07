@@ -99,7 +99,7 @@ def decide(pairs_raw, lines, items, customers, fx) -> pl.DataFrame:
        sum(CASE WHEN sgn=-1 THEN open_c ELSE 0 END) OVER (PARTITION BY bank_txn_id, item_cur) credit_open_sum,
        sum(CASE WHEN kind='ARI' AND discount_pct IS NOT NULL AND discount_days IS NOT NULL
                      AND booking_date <= issue_date + CAST(discount_days AS INTEGER) + 3
-                THEN total_cents-round(total_cents*discount_pct/100) ELSE open_c END)
+                THEN total_cents-round(total_cents*discount_pct/100) ELSE sgn*open_c END)
            OVER (PARTITION BY bank_txn_id,item_cur) discount_expected,
        sum(CASE WHEN kind='ARI' THEN total_cents ELSE 0 END) OVER (PARTITION BY bank_txn_id,item_cur) invoice_total,
        max(cash_i) OVER (PARTITION BY bank_txn_id, item_cur) line_cash_i,
