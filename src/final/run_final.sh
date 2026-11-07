@@ -165,6 +165,8 @@ run_stage discombo T18_discombo
 run_stage twopay T13d_twopay
 run_stage unident T7b_unidentified
 run_stage cnfx T13b_cnfx
+run_stage duefill T20_duefill
+run_stage tolmatch T3g_tolmatch
 run_stage excfix T15_excfix
 
 SHA=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo nogit)

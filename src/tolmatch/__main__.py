@@ -19,6 +19,8 @@ import time
 
 import duckdb
 
+from src.common import data_root
+
 PARTY_MIN = 0.5
 OVER_MAX = 0.10
 DUP_DIRECTIONS = ('OUT',)  # receipts' duplicates are already flagged by src.postfix (dup_amt); here only payments
@@ -30,7 +32,7 @@ BANK_ENABLED = False   # without a text signal: 149 of 1722 right (8.7 %), far b
 XB_RE = r"\b(SHA|BEN|OUR|CHGS|CHG)\b|WIRE IN|\bSWIFT\b|TRANSFER EN DIV|\bTT IN\b|INTERNATIONAL|AUSLAND|ETRANGER|ESTERO"
 BANK_EUR_CENTS = 6000
 BANK_PCT = 0.02
-FX = "data/bankrec-docs-and-masters/masters/fx_rates.csv"
+FX = os.path.join(data_root(), "masters", "fx_rates.csv").replace(os.sep, "/")   # same masters as the rest (HK_DATA root)
 
 
 def tol(x):
