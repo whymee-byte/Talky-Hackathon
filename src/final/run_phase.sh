@@ -7,7 +7,15 @@
 set -euo pipefail
 PHASE=${1:?phase: sample|window|live|final}
 cd "$(dirname "$0")/../.."
-PY=${PY:-.venv/bin/python}
+# Python: $PY if it really runs, else the first candidate that does (on Windows `python3` can be the Store alias).
+py_ok() { "$1" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; }
+PY_FOUND=""
+for c in "${PY:-}" .venv/bin/python .venv/Scripts/python.exe python3 python py; do
+  [[ -n "$c" ]] && py_ok "$c" && { PY_FOUND=$c; break; }
+done
+[[ -n "$PY_FOUND" ]] || { echo "ERROR: no Python >= 3.10 found (set PY=/path/to/python)"; exit 2; }
+PY=$PY_FOUND
+echo "== python: $PY ($($PY -c 'import sys; print(sys.version.split()[0])'))"
 export PYTHONDONTWRITEBYTECODE=1
 step() { local t=$SECONDS; echo "== $PHASE: $1"; shift; "$@"; echo "   ($((SECONDS - t)) s)"; }
 if [[ "$PHASE" == "final" ]]; then
@@ -49,6 +57,10 @@ step "unidentified"     $PY -u -m src.unident     --phase "$PHASE"
 step "due invoices on long receipts (T20)" $PY -u -m src.duefill --phase "$PHASE"
 [[ -n "${NO_T3G:-}" ]] || step "tolerant matches (T3g)" $PY -u -m src.tolmatch --phase "$PHASE"
 step "more credit notes (T19)" $PY -u -m src.cnmore --phase "$PHASE"
+step "payer subset gap (T16)" $PY -u -m src.refgap --phase "$PHASE"
+step "credit-note units (T16)" $PY -u -m src.cnrest --phase "$PHASE"
+step "credit-note runs (T21)" $PY -u -m src.cnfill --phase "$PHASE"
+step "late discount / FX orig (T21)" $PY -u -m src.fxlate --phase "$PHASE"
 step "last exception fixes (T15)" $PY -u -m src.excfix --phase "$PHASE"
 [[ -n "${NO_T3G:-}" ]] || step "overpayment shape (T3g)" $PY -u -m src.tolmatch --phase "$PHASE" --overfix
 if [[ "$PHASE" == "window" || "$PHASE" == "sample" ]]; then
