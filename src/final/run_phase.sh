@@ -46,6 +46,7 @@ step "discount subsets (T18)" $PY -u -m src.discombo --phase "$PHASE"
 step "two receipts (T13d)" $PY -u -m src.twopay --phase "$PHASE"
 step "unidentified"     $PY -u -m src.unident     --phase "$PHASE"
 [[ -n "${NO_CNFX:-}" ]] || step "credit notes / FX sets" $PY -u -m src.cnfx --phase "$PHASE"
+step "due invoices on long receipts (T20)" $PY -u -m src.duefill --phase "$PHASE"
 step "last exception fixes (T15)" $PY -u -m src.excfix --phase "$PHASE"
 if [[ "$PHASE" == "window" || "$PHASE" == "sample" ]]; then
   step "write + score" $PY -u -m src.submit --phase "$PHASE" --from "work/$PHASE/allocations.parquet" --score
