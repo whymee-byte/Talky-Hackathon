@@ -107,3 +107,11 @@ compensa como etapa. El resto no tiene solución única por importe: hace falta 
 | + tolpost (overfix + T3u) | **94,11** | **93,99** |
 | + T3g.ambig (quita full_clear ambiguo: línea multi-partida, sin referencia en texto, ≥2 facturas abiertas del mismo importe; 343 pares) | **94,12** | — |
 tolpost sigue sumando (+0,06) sobre el excfix nuevo; todo consistente fuera de muestra. LIVE en curso.
+
+## 11. Estado al cierre (FINAL enviado 18:40: main 9cb8800 → 94,22)
+Esta rama (javier/t3u-on-94) está rebasada sobre el main final (ef14c90) y NO entró en FINAL. Aporta, en orden de
+valor: `src.tolpost` tras excfix (overfix + T3u + T3g.ambig) > `src.pocomb` > `src.delaycomb` (ambos antes de cnmore),
+todo validado fuera de muestra (Q1 → Q2-Q4) y sin red. Medida de la ventana completa sobre el main final: ver abajo.
+Para FINAL habría sido lo mismo que LIVE: pasos deterministas al final del pipeline, reglas generales aprendidas de
+TRAIN (retraso por cliente, pedidos completos, forma del sobrepago, tabla de no identificados), sin ids ni importes
+a fuego.
