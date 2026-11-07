@@ -32,11 +32,13 @@ step "no-item category" $PY -u -m src.nonitem      --phase "$PHASE"
 step "matcher"          $PY -u -m src.match        --phase "$PHASE"
 step "exceptions"       $PY -u -m src.exceptions   --phase "$PHASE"
 step "exception fixes"  $PY -u -m src.postfix     --phase "$PHASE"
+step "multi-ref receipts" $PY -u -m src.multiref  --phase "$PHASE"
 EXPH=$([[ "$PHASE" == "window" ]] && echo train || echo "$PHASE")
 [[ -f "data_cache/$EXPH/pdf_text.parquet" ]] || step "pdf text" $PY -u -m src.pdffacts.extract --phase "$EXPH"
 step "pdf facts"        $PY -u -m src.pdffacts --phase "$PHASE"
 step "pdf clauses"      $PY -u -m src.docrules --phase "$PHASE"
 step "exception norm"   $PY -u -m src.excnorm   --phase "$PHASE"
+step "unidentified"     $PY -u -m src.unident     --phase "$PHASE"
 if [[ "$PHASE" == "window" || "$PHASE" == "sample" ]]; then
   step "write + score" $PY -u -m src.submit --phase "$PHASE" --from "work/$PHASE/allocations.parquet" --score
 else
