@@ -72,7 +72,7 @@ def add(con, phase, model):
     # document numbers repeat across suppliers of an entity (INV0000951...): the document amount must agree too
     docs = f"""SELECT supplier_id AS party_id, entity, supplier_invoice_number AS d, total_amount AS a FROM {src(base, 'ap_invoices')}
                UNION ALL SELECT party_id, entity, document_number, total_amount FROM {src(base, 'credit_notes')}"""
-    if base != "train":
+    if base != "train" and os.path.isfile(f"{RAW}/{base}/open_items_at_start.csv.gz"):
         docs += f" UNION ALL SELECT party_id, entity, document_number, open_amount FROM {src(base, 'open_items_at_start')}"
     names = f"""SELECT party_id, entity, name_norm FROM '{m}/parties.parquet' WHERE kind = 'S'
                 UNION SELECT supplier_id, entity, norm(supplier_name) FROM {src(base, 'ap_invoices')}"""
