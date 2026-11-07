@@ -30,6 +30,7 @@ OVERPAY_MAX = 0.10       # golden overpayments exceed the open amount by <= ~10 
 COMB_PARTY_MIN = 0.5   # subset-sum only with a fairly sure party
 COMB_MAX_ITEMS = 40    # most recent open items of the party considered for combinations
 PARTY_MIN = 0.30          # T4 confidence to use a candidate party for amount matching (~F1/2 after calibration)
+AMT_NAME_CONF = 0.6       # party under PARTY_MIN but named in the text with an item of exactly the amount (P ~0.94 on TRAIN window)
 REF_CONF = {"alnum": 0.95, "po": 0.85, "dig": 0.90, "suf": 0.80}
 FX_TOL = 0.03             # POLICIES: bank FX spread always well within 3 %
 WHT_RATES = (0.0125, 0.015, 0.10)
@@ -57,7 +58,13 @@ def build(phase):
     con.execute(f"""CREATE TABLE SL AS SELECT bank_txn_id, item_id, amount_cents, coalesce(exception, '') AS exception,
                     rule, confidence, evidence FROM {f"'{w}/side_links.parquet'" if has_side else
                     "(SELECT NULL::VARCHAR bank_txn_id, NULL::VARCHAR item_id, NULL::BIGINT amount_cents, NULL::VARCHAR exception, NULL::VARCHAR rule, NULL::DOUBLE confidence, NULL::VARCHAR evidence WHERE false)"}""")
-    con.execute(f"CREATE TABLE P AS SELECT bank_txn_id, party_id, rank, confidence FROM '{w}/line_party.parquet'")
+    # amt_name: T4 proposed the party from its master name in the text AND it has an item for exactly the line amount.
+    # When a learned pattern key puts another party first, calibration leaves this one under PARTY_MIN although it is
+    # the golden party ~94 % of the time on lines that otherwise end unmatched (TRAIN window, base run): the amount
+    # stage admits it anyway (an unmatched receipt also shifts every later FIFO pick of that payer).
+    con.execute(f"""CREATE TABLE P AS SELECT bank_txn_id, party_id, rank, confidence,
+                       (method = 'amount_exact_item' AND evidence LIKE '%master:name=%') AS amt_name
+                   FROM '{w}/line_party.parquet'""")
     con.execute(f"""CREATE TABLE FX AS SELECT date::DATE AS d, currency, units_per_eur::DOUBLE AS u
                    FROM read_csv('{masters}/fx_rates.csv', all_varchar=true)
                    UNION ALL SELECT DISTINCT date::DATE, 'EUR', 1.0
@@ -164,13 +171,14 @@ def build(phase):
                   WHERE bank_txn_id NOT IN (SELECT bank_txn_id FROM REFP)),
            c AS (
         SELECT lt.bank_txn_id, lt.month_hint, i.item_id, i.kind, i.party_id, i.issue_date, i.open_at_start_cents open_c,
-               p.confidence AS pconf,
+               CASE WHEN p.confidence < {PARTY_MIN} THEN {AMT_NAME_CONF} ELSE p.confidence END AS pconf,
+               p.confidence < {PARTY_MIN} AS by_amt_name,
                CASE WHEN abs(lt.cash - i.open_at_start_cents) <= 1 THEN 'exact'
                     ELSE 'discount' END AS how
         FROM lt JOIN P p USING (bank_txn_id)
         JOIN IO i ON i.party_id = p.party_id AND i.currency = lt.currency
         JOIN KS ks ON ks.direction = lt.direction AND ks.kind = i.kind AND ks.sgn = 1
-        WHERE p.confidence >= {PARTY_MIN} AND i.issue_date <= lt.booking_date
+        WHERE (p.confidence >= {PARTY_MIN} OR p.amt_name) AND i.issue_date <= lt.booking_date
           AND (abs(lt.cash - i.open_at_start_cents) <= 1
                OR (i.discount_pct IS NOT NULL AND lt.booking_date <= i.issue_date + i.discount_days + 3
                    AND abs(lt.cash - round(i.total_cents * (1 - i.discount_pct / 100))) <= 1
@@ -210,7 +218,8 @@ def build(phase):
              CASE how WHEN 'discount' THEN 'SHORT_DISCOUNT' ELSE '' END AS exception,
              'T3.amt.' || how || CASE WHEN n_cand = 1 THEN '.unique' WHEN month_ok THEN '.month' ELSE '.fifo' END AS rule,
              pconf * CASE WHEN n_cand = 1 THEN 0.95 WHEN month_ok THEN 0.85 ELSE 0.75 END AS confidence,
-             'party=' || party_id || ' conf=' || round(pconf, 2) || '; candidates=' || n_cand AS evidence
+             'party=' || party_id || ' conf=' || round(pconf, 2) || '; candidates=' || n_cand
+               || CASE WHEN by_amt_name THEN '; party_by=amount+name' ELSE '' END AS evidence
       FROM (SELECT * FROM AM UNION ALL SELECT * FROM AF)""")
 
     # ------------------------------------------------------------------ comb: subset of the party's open items = cash
