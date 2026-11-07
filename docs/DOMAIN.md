@@ -33,6 +33,12 @@ Ahora supongamos que el cliente paga 980 EUR dentro del plazo que permite un des
 
 La conciliación no consiste solamente en buscar importes iguales. Un movimiento puede pagar varias facturas, una factura puede pagarse en varios movimientos, y el texto bancario puede estar incompleto o usar el nombre comercial del cliente en vez del número de factura.
 
+### Qué se observa en `sample/`
+
+La muestra contiene un mes de TRAIN. Una exploración vectorizada con DuckDB y Polars encontró **8.499 movimientos bancarios** y **8.499 `bank_txn_id` distintos**, con fechas de contabilización del **2 al 30 de junio de 2025**, 5.945 abonos, 2.554 cargos, 10 cuentas, 3 formatos de extracto y 2 divisas. Las etiquetas contienen **36.574 filas** para esos movimientos: 915 no liquidan ninguna partida y el número de partidas por movimiento tiene mediana 1, percentil 90 igual a 7, percentil 99 aproximadamente 51 y máximo 585.
+
+Esto no es una peculiaridad de la muestra: el README anuncia aproximadamente 210.000 movimientos y 750.000 asignaciones en medio año LIVE. La consecuencia práctica es que el diseño debe usar lecturas perezosas, joins y agregaciones vectorizadas, no recorrer filas en Python ni comparar cada movimiento contra todas las partidas.
+
 ## 3. Entidades y tipos de partidas
 
 ### Entidades principales
@@ -90,7 +96,7 @@ bank_txn_id,item_id,amount,category,exception
 
 El importe de una fila es positivo, incluso para abonos. En una liquidación completa con descuento, gastos bancarios tolerados, retención fiscal, diferencia de cambio o sobrepago, se informa el importe abierto completo del documento. En una liquidación parcial o disputa, se informa lo realmente aplicado. La tolerancia del evaluador es:
 
-> un importe es correcto si está dentro de `max(0,01, 0,5 % × importe de referencia)`.
+> un importe es correcto si está dentro de `max(0.01, 0.5 % × importe de referencia)`.
 
 ## 5. Flujo de datos
 
@@ -181,16 +187,16 @@ Cada línea bancaria pertenece exactamente a una fase según su fecha de contabi
 La puntuación final es, redondeada a dos decimales:
 
 ```text
-puntuación = 100 × (0,5 × F1_asignaciones
-                   + 0,3 × acierto_por_movimiento
-                   + 0,2 × macro-F1_excepciones)
+puntuación = 100 × (0.5 × F1_asignaciones
+                   + 0.3 × acierto_por_movimiento
+                   + 0.2 × macro-F1_excepciones)
 ```
 
 ### 9.1 F1 de asignaciones: 50 %
 
 Se comparan los pares `(bank_txn_id, item_id)`.
 
-- Un par enviado es verdadero positivo si el par aparece en la referencia y su importe está dentro de `max(0,01, 0,5 % del importe de referencia)`.
+- Un par enviado es verdadero positivo si el par aparece en la referencia y su importe está dentro de `max(0.01, 0.5 % del importe de referencia)`.
 - `precision = TP / pares enviados`.
 - `recall = TP / pares de referencia`.
 - `F1 = 2 × precision × recall / (precision + recall)` cuando ambas métricas tienen sentido.
@@ -226,6 +232,6 @@ El resultado también puede mostrar métricas auxiliares como precisión, recall
 4. **Usar la unidad correcta del importe**: las filas de partidas se expresan en la moneda del documento, no necesariamente en la moneda de la cuenta bancaria.
 5. **Reconocer lotes y relaciones de grupo**: una transferencia de una matriz, una fábrica de pagos o una remesa puede explicar varias partidas de otra sociedad.
 6. **No forzar coincidencias**: un cobro no identificado bien clasificado es mejor que una factura incorrecta con el mismo importe.
-7. **Respetar la tolerancia**: un importe fuera de `max(0,01, 0,5 %)` no cuenta como la asignación correcta aunque el documento elegido sea correcto.
+7. **Respetar la tolerancia**: un importe fuera de `max(0.01, 0.5 % del importe de referencia)` no cuenta como la asignación correcta aunque el documento elegido sea correcto.
 
 Para conocer las reglas operativas completas, consulta [`data/POLICIES.md`](../data/POLICIES.md). Para las restricciones de CSV, validación y envío, consulta [`data/FORMAT.md`](../data/FORMAT.md).

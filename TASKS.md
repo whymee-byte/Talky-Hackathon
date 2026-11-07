@@ -41,7 +41,7 @@ Las entregas deben respetar `data/FORMAT.md`: una fila por asignación, cinco co
 - **Fuera de alcance:** Elegir definitivamente el candidato ganador o asignar la puntuación final.
 - **Dependencias inevitables:** T2 para enlazar identificadores extraídos con ítems; T1 para asociar avisos con movimientos cuando solo exista referencia bancaria.
 - **Hecho cuando:** Para cada documento procesable de muestra se produce un registro estructurado con origen, confianza y evidencia; los casos sin texto o ambiguos quedan marcados, no inventados.
-- **Cómo verificarlo:** Medir cobertura de extracción en `sample/pdfs` y `sample/remittance_advices`; revisar manualmente una muestra que incluya instalamentos, retenciones, descuentos, “anula y sustituye” y deducciones; comprobar trazabilidad de cada campo a página, fila o celda.
+- **Cómo verificarlo:** Medir cobertura de extracción en `sample/pdfs` y `sample/remittance_advices`; revisar manualmente una muestra que incluya cuotas, retenciones, descuentos, “anula y sustituye” y deducciones; comprobar trazabilidad de cada campo a página, fila o celda.
 - **Riesgos y decisiones clave:** Variación de layouts y llegada posterior al cobro. Separar “hecho extraído” de “interpretación contable” y conservar la versión del parser.
 
 ### T4. Generación y ranking de candidatos de matching
