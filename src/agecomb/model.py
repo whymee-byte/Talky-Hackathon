@@ -7,7 +7,7 @@ A logistic model over (receipt, open invoice of the T4 party) features that need
 invoice at the booking date, days past due, "skips" (later invoices of the party already settled by an earlier line),
 terms, amount vs cash, purchase-order grouping, duplicates of the amount, position among the party's open invoices.
 Nothing hard-coded: the weights are learned from the TRAIN golden (honest check: fit on 2024-07..09, measured on
-2024-10..2025-06: AUC 0.91; pairs with p >= 0.6 are right 71 % of the time, above the F1 break-even of ~0.47).
+2024-10..2025-06: AUC 0.91; pairs with p >= 0.5 are right ~65 % of the time, above the F1 break-even of ~0.47).
 Pairs with p >= P_MIN are emitted with confidence = p.
 """
 import os
@@ -17,7 +17,7 @@ import numpy as np
 
 HERE = os.path.dirname(__file__)
 WEIGHTS = os.path.join(HERE, "weights.npy")
-P_MIN = float(os.environ.get("AC_MODEL_PMIN", 0.6))
+P_MIN = float(os.environ.get("AC_MODEL_PMIN", 0.5))
 AGE_BINS = [(0, 30), (30, 60), (60, 90), (90, 120), (120, 180), (180, 250), (250, 400)]
 SKIP_BINS = [(0, 1), (1, 5), (5, 15), (15, 40), (40, 100), (100, 1e9)]
 
@@ -55,7 +55,10 @@ def features(d):
             np.log(v / cash), np.log(v / cash) ** 2, (v > cash).astype(float), np.log(d["tot_v"].astype(float) / cash),
             (d["tot_v"] < cash).astype(float), (d["po_n"] > 1).astype(float), np.log1p(d["po_v"].astype(float) / cash),
             np.log(d["n_same"].astype(float)), d["is_full"].astype(float), np.log1p(d["age_rank"].astype(float)),
-            d["pc"].astype(float)]
+            d["pc"].astype(float),
+            np.log1p(age) * np.log1p(sk), (dl / 100) * d["terms"].astype(float) / 30, v / d["tot_v"].astype(float),
+            np.log(d["n_cand"].astype(float)) * np.log1p(d["age_rank"].astype(float)), d["is_full"].astype(float) * np.log(v / cash),
+            np.log1p(d["age_rank"].astype(float)) / np.log(d["n_cand"].astype(float) + 1)]
     for lo, hi in AGE_BINS:
         cols.append(((age >= lo) & (age < hi)).astype(float))
     for lo, hi in SKIP_BINS:
@@ -69,6 +72,26 @@ def predict(d, params):
     w, mu, sd = params[:k + 1], params[k + 1:2 * k + 1], params[2 * k + 1:]
     Xb = np.hstack([(X - mu) / sd, np.ones((len(X), 1))])
     return 1 / (1 + np.exp(-Xb @ w))
+
+
+def budget(d, p):
+    """Mask of accepted pairs: p >= P_MIN and, taking each line's candidates by decreasing p, the running sum of their
+    open amounts never exceeds the cash (a receipt cannot settle more than it pays)."""
+    order = np.lexsort((-p, d["bank_txn_id"]))
+    bt = d["bank_txn_id"][order]
+    v = d["v"].astype(np.int64)[order]
+    pp = p[order]
+    keep = np.zeros(len(p), dtype=bool)
+    run, prev = 0, None
+    for k in range(len(order)):
+        if bt[k] != prev:
+            run, prev = 0, bt[k]
+        if pp[k] < P_MIN:
+            continue
+        if run + v[k] <= int(d["cash"][order[k]]):
+            run += v[k]
+            keep[order[k]] = True
+    return keep
 
 
 def fit(X, y, iters=1500, lr=0.5, lam=1e-4):
